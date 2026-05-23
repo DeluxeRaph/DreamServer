@@ -49,6 +49,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
+	@echo ""
+	@echo "=== macOS dream-host-agent bootstrap verification ==="
+	@bash tests/test-macos-host-agent-verification.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="
