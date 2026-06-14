@@ -3506,6 +3506,24 @@ class AgentHandler(BaseHTTPRequestHandler):
                 llama_server_image = runtime_profile.get("llama_server_image") or llama_server_image
                 runtime_env = runtime_profile.get("env") if isinstance(runtime_profile.get("env"), dict) else {}
 
+            def _context_from_env_key(key: str) -> int:
+                try:
+                    return int(env_pre.get(key) or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            hermes_context_floor = max(_context_from_env_key("MAX_CONTEXT"), _context_from_env_key("CTX_SIZE"))
+            try:
+                hermes_live_exists_for_context = hermes_live_config.exists()
+            except PermissionError:
+                hermes_live_exists_for_context = False
+            if hermes_context_floor > context_length and hermes_live_exists_for_context:
+                # A Hermes-enabled install may intentionally raise llama.cpp's
+                # context above the catalog/profile value. Do not let dashboard
+                # model activation silently lower Hermes back under its own
+                # 64K minimum.
+                context_length = hermes_context_floor
+
             # Save rollback snapshot
             env_backup = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
             ini_backup = models_ini.read_text(encoding="utf-8") if models_ini.exists() else ""
@@ -3610,8 +3628,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             except PermissionError:
                 hermes_live_exists = None
             hermes_base_url = "http://litellm:4000/v1" if windows_host_lemonade else None
-            hermes_live_patched = _patch_hermes_model_config(hermes_live_config, hermes_model_name, base_url=hermes_base_url)
-            hermes_template_patched = _patch_hermes_model_config(hermes_template_config, hermes_model_name, base_url=hermes_base_url)
+            hermes_live_patched = _patch_hermes_model_config(
+                hermes_live_config,
+                hermes_model_name,
+                base_url=hermes_base_url,
+                context_length=context_length,
+            )
+            hermes_template_patched = _patch_hermes_model_config(
+                hermes_template_config,
+                hermes_model_name,
+                base_url=hermes_base_url,
+                context_length=context_length,
+            )
             # Restart Hermes only when its persisted live config changed, or
             # when no persisted config exists and a patched template can seed
             # the next start. If live config is container-owned and unreadable,
@@ -4168,8 +4196,13 @@ def _write_lemonade_config(install_dir: Path, gguf_file: str):
     logger.info("Wrote lemonade.yaml for model: extra.%s", gguf_file)
 
 
-def _patch_hermes_model_config(path: Path, model_name: str, base_url: str | None = None) -> bool:
-    """Patch `model.default` and optionally `model.base_url` in Hermes config.
+def _patch_hermes_model_config(
+    path: Path,
+    model_name: str,
+    base_url: str | None = None,
+    context_length: int | None = None,
+) -> bool:
+    """Patch model routing fields in Hermes config.
 
     Hermes copies the template once into data/hermes/config.yaml and then uses
     the persisted copy as source of truth. Patch both when present so current
@@ -4215,6 +4248,12 @@ def _patch_hermes_model_config(path: Path, model_name: str, base_url: str | None
         if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f'{indent}base_url: "{base_url}"'
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
+        if context_length and re.match(r"^\s+context_length:\s*", line):
+            indent = line[:len(line) - len(line.lstrip())]
+            new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue

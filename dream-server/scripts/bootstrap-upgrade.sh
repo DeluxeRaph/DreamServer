@@ -687,7 +687,7 @@ patch_hermes_yaml_with_sed() {
 }
 
 patch_hermes_model_after_swap() {
-    local runtime llm_backend hermes_base_url old_model new_model tpl
+    local runtime llm_backend hermes_base_url old_model new_model tpl live live_host_patch_failed
     runtime="$(read_env_value AMD_INFERENCE_RUNTIME | tr '[:upper:]' '[:lower:]')"
     llm_backend="$(read_env_value LLM_BACKEND | tr '[:upper:]' '[:lower:]')"
     hermes_base_url="$(read_env_value HERMES_LLM_BASE_URL)"
@@ -708,12 +708,20 @@ patch_hermes_model_after_swap() {
         fi
     fi
 
+    live="$INSTALL_DIR/data/hermes/config.yaml"
+    live_host_patch_failed=false
+    if [[ -f "$live" ]]; then
+        if ! patch_hermes_yaml_with_sed "$live" "$new_model" "$FULL_MAX_CONTEXT" "$hermes_base_url"; then
+            live_host_patch_failed=true
+            log "WARNING: Could not patch ${live} after full-model swap; will try the container copy if Hermes is running."
+        fi
+    fi
+
     if [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=dream-hermes --format '{{.Names}}' 2>/dev/null | grep -q dream-hermes; then
-        local live_patch old_model_sed new_model_sed hermes_base_url_sed
-        old_model_sed="$(printf '%s' "$old_model" | sed 's/[\\&|]/\\&/g')"
+        local live_patch new_model_sed hermes_base_url_sed
         new_model_sed="$(printf '%s' "$new_model" | sed 's/[\\&|]/\\&/g')"
         hermes_base_url_sed="$(printf '%s' "$hermes_base_url" | sed 's/[\\&|]/\\&/g')"
-        live_patch="sed -i -e 's|^  default: \"${old_model_sed}\"|  default: \"${new_model_sed}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|'"
+        live_patch="sed -i -e 's|^  default: \".*\"[[:space:]]*$|  default: \"${new_model_sed}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|'"
         if [[ -n "$hermes_base_url" ]]; then
             live_patch="${live_patch} -e 's|^  base_url: \".*\"|  base_url: \"${hermes_base_url_sed}\"|'"
         fi
@@ -727,6 +735,9 @@ patch_hermes_model_after_swap() {
             log "ERROR: Could not restart Hermes after full-model swap."
             return 1
         }
+    elif [[ "$live_host_patch_failed" == "true" ]]; then
+        log "ERROR: Could not patch Hermes live config after full-model swap."
+        return 1
     fi
 
     return 0
@@ -1471,11 +1482,13 @@ LITELLM_UPGRADE_EOF
         # surfaces as "Hermes works on Tower2/Mac but every prompt 404s on
         # Strix Halo" after a bootstrap-to-full swap.
         #
-        # Two files to keep in sync:
-        #   1. /opt/data/config.yaml inside the container — the live config
-        #      Hermes reads at startup. Owned by container UID; patch via
-        #      `docker exec` so we don't need host sudo.
-        #   2. extensions/services/hermes/cli-config.yaml.template — the
+        # Three files/views to keep in sync:
+        #   1. data/hermes/config.yaml on the host — the bind-mounted live
+        #      config that persists across Hermes restarts.
+        #   2. /opt/data/config.yaml inside the container — the same live
+        #      config from Hermes's view. Patch via docker exec too so Linux
+        #      container-owned files can still be recovered.
+        #   3. extensions/services/hermes/cli-config.yaml.template — the
         #      source Hermes copies into /opt/data on first start. Updating
         #      it keeps subsequent down-and-up cycles correct.
         # Lemonade prefixes the served model id with "extra."; llama.cpp
@@ -1483,6 +1496,7 @@ LITELLM_UPGRADE_EOF
         # added in installers/phases/11-services.sh.
         _hermes_old_model="$BOOTSTRAP_GGUF_FILE"
         _hermes_new_model="$FULL_GGUF_FILE"
+        _hermes_base_url="$(read_env_value HERMES_LLM_BASE_URL)"
         _gpu_backend_for_hermes=$(grep -E '^GPU_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"\047\r' || echo "")
         if [[ "$_gpu_backend_for_hermes" == "amd" ]]; then
             _hermes_old_model="extra.$BOOTSTRAP_GGUF_FILE"
@@ -1495,29 +1509,32 @@ LITELLM_UPGRADE_EOF
         # bootstrap model id.
         _hermes_tpl="$INSTALL_DIR/extensions/services/hermes/cli-config.yaml.template"
         if [[ -f "$_hermes_tpl" ]]; then
-            _hermes_patcher="$INSTALL_DIR/scripts/patch-hermes-config.py"
-            _python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
-            if [[ -n "$_python_cmd" && -f "$_hermes_patcher" ]]; then
-                if ! "$_python_cmd" "$_hermes_patcher" "$_hermes_tpl" \
-                    --model "$_hermes_new_model" \
-                    --context-length "$FULL_MAX_CONTEXT" 2>&1; then
-                    log "WARNING: Could not patch ${_hermes_tpl} with patch-hermes-config.py (non-fatal — operator can hand-edit before restarting Hermes)"
-                fi
-            elif sed -i.bak \
-                -e "s|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|" \
-                -e "s|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|" \
-                -e "s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|" \
-                "$_hermes_tpl" 2>&1; then
-                rm -f "${_hermes_tpl}.bak"
+            if ! patch_hermes_yaml_with_sed "$_hermes_tpl" "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url"; then
+                log "WARNING: Could not patch ${_hermes_tpl} (non-fatal; operator can hand-edit before restarting Hermes)"
+            fi
+        fi
+
+        _hermes_live="$INSTALL_DIR/data/hermes/config.yaml"
+        _hermes_live_host_patched=false
+        if [[ -f "$_hermes_live" ]]; then
+            if patch_hermes_yaml_with_sed "$_hermes_live" "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url"; then
+                _hermes_live_host_patched=true
             else
-                log "WARNING: Could not patch ${_hermes_tpl} (non-fatal — operator can hand-edit before restarting Hermes)"
+                log "WARNING: Could not patch ${_hermes_live} on host (non-fatal if container patch below succeeds)"
             fi
         fi
 
         if $DOCKER_CMD ps --filter name=dream-hermes --format '{{.Names}}' 2>/dev/null | grep -q dream-hermes; then
             # Live config inside the running container (owned by container UID).
+            _hermes_new_model_sed="$(printf '%s' "$_hermes_new_model" | sed 's/[\\&|]/\\&/g')"
+            _hermes_base_url_sed="$(printf '%s' "$_hermes_base_url" | sed 's/[\\&|]/\\&/g')"
+            _hermes_live_patch="sed -i -e 's|^  default: \".*\"[[:space:]]*$|  default: \"${_hermes_new_model_sed}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|'"
+            if [[ -n "$_hermes_base_url" ]]; then
+                _hermes_live_patch="${_hermes_live_patch} -e 's|^  base_url: \".*\"|  base_url: \"${_hermes_base_url_sed}\"|'"
+            fi
+            _hermes_live_patch="${_hermes_live_patch} -e 's|^  enabled: .*|  enabled: true|' -e 's|^  threshold: .*|  threshold: 0.75|' -e 's|^  target_ratio: .*|  target_ratio: 0.50|' -e 's|^  protect_last_n: .*|  protect_last_n: 40|' /opt/data/config.yaml"
             $DOCKER_CMD exec dream-hermes sh -c \
-                "sed -i -e 's|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|' -e 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|' -e 's|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|' -e 's|^  enabled: .*|  enabled: true|' -e 's|^  threshold: .*|  threshold: 0.75|' -e 's|^  target_ratio: .*|  target_ratio: 0.50|' -e 's|^  protect_last_n: .*|  protect_last_n: 40|' /opt/data/config.yaml" 2>&1 || \
+                "$_hermes_live_patch" 2>&1 || \
                 log "WARNING: Could not patch Hermes /opt/data/config.yaml (non-fatal — operator can hand-edit and 'docker restart dream-hermes')"
             log "Restarting Hermes to pick up model change..."
             $DOCKER_CMD restart dream-hermes 2>&1 || log "WARNING: Hermes restart failed (non-fatal — hand-restart with 'docker restart dream-hermes')"
@@ -1583,26 +1600,8 @@ LITELLM_UPGRADE_EOF
                 log "WARNING: Hermes did not respond on /api/status within 60s; skipping system-prompt warm-up."
             fi
         else
-            # If Hermes is stopped, its persisted /opt/data mount may still
-            # exist on the host. Patch it when writable; otherwise the template
-            # update above still protects first-time/fresh data starts.
-            _hermes_live="$INSTALL_DIR/data/hermes/config.yaml"
-            if [[ -f "$_hermes_live" ]]; then
-                if [[ -n "${_python_cmd:-}" && -f "${_hermes_patcher:-}" ]]; then
-                    if ! "$_python_cmd" "$_hermes_patcher" "$_hermes_live" \
-                        --model "$_hermes_new_model" \
-                        --context-length "$FULL_MAX_CONTEXT" 2>&1; then
-                        log "WARNING: Could not patch ${_hermes_live} with patch-hermes-config.py (non-fatal — operator can hand-edit and restart Hermes)"
-                    fi
-                elif sed -i.bak \
-                    -e "s|^  default: \"${_hermes_old_model}\"|  default: \"${_hermes_new_model}\"|" \
-                    -e "s|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|" \
-                    -e "s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|" \
-                    "$_hermes_live" 2>&1; then
-                    rm -f "${_hermes_live}.bak"
-                else
-                    log "WARNING: Could not patch ${_hermes_live} (non-fatal — operator can hand-edit and restart Hermes)"
-                fi
+            if [[ -f "$_hermes_live" && "$_hermes_live_host_patched" != "true" ]]; then
+                log "WARNING: Hermes is stopped and ${_hermes_live} could not be patched; operator can hand-edit and restart Hermes"
             fi
         fi
         sync_windows_opencode_config

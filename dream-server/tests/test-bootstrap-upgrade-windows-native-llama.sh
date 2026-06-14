@@ -24,6 +24,7 @@ install_dir="$tmp/install"
 trace="$tmp/powershell.trace"
 mkdir -p \
     "$fakebin" \
+    "$install_dir/data/hermes" \
     "$install_dir/data/models" \
     "$install_dir/config/llama-server" \
     "$install_dir/extensions/services/hermes" \
@@ -97,6 +98,17 @@ model:
   context_length: 8192
 EOF_HERMES
 
+cat > "$install_dir/data/hermes/config.yaml" <<'EOF_HERMES_LIVE'
+model:
+  default: "Full.gguf"
+  provider: "custom"
+  base_url: "http://stale.invalid/v1"
+  context_length: 8192
+auxiliary:
+  compression:
+    context_length: 8192
+EOF_HERMES_LIVE
+
 printf 'bootstrap\n' > "$install_dir/data/models/Bootstrap.gguf"
 printf 'full-model\n' > "$install_dir/data/models/Full.gguf"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$install_dir/llama-server/llama-server.exe"
@@ -133,6 +145,14 @@ grep -q 'default: "Full.gguf"' "$install_dir/extensions/services/hermes/cli-conf
     || fail "Hermes should use the bare GGUF id for Windows llama-server fallback"
 ! grep -q 'extra.Full.gguf' "$install_dir/extensions/services/hermes/cli-config.yaml.template" \
     || fail "Hermes should not use Lemonade extra.* model ids for Windows llama-server fallback"
+grep -q 'default: "Full.gguf"' "$install_dir/data/hermes/config.yaml" \
+    || fail "Hermes live config should keep the bare full-model id"
+grep -q 'base_url: "http://host.docker.internal:8080/v1"' "$install_dir/data/hermes/config.yaml" \
+    || fail "Hermes live config should preserve the generated llama-server route"
+grep -q '^  context_length: 32768$' "$install_dir/data/hermes/config.yaml" \
+    || fail "Hermes live config should use the full-model context"
+grep -q '^    context_length: 32768$' "$install_dir/data/hermes/config.yaml" \
+    || fail "Hermes auxiliary compression context should use the full-model context"
 [[ ! -f "$install_dir/data/models/Bootstrap.gguf" ]] \
     || fail "bootstrap model should be removed after verified native Windows swap"
 grep -q '"status": "complete"' "$install_dir/data/bootstrap-status.json" \

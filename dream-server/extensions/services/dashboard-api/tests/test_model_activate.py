@@ -224,6 +224,33 @@ class TestPatchHermesModelConfig:
         assert '  provider: "custom"' in text
         assert '  default: "leave-me"' in text
 
+    def test_updates_context_and_base_url(self, tmp_path):
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            "model:\n"
+            "  default: \"old-model\"\n"
+            "  provider: \"custom\"\n"
+            "  base_url: \"http://host.docker.internal:8080/v1\"\n"
+            "  context_length: 32768\n"
+            "auxiliary:\n"
+            "  compression:\n"
+            "    context_length: 32768\n",
+            encoding="utf-8",
+        )
+
+        assert _patch_hermes_model_config(
+            config,
+            "new-model.gguf",
+            base_url="http://llama-server:8080/v1",
+            context_length=131072,
+        ) is True
+
+        text = config.read_text(encoding="utf-8")
+        assert '  default: "new-model.gguf"' in text
+        assert '  base_url: "http://llama-server:8080/v1"' in text
+        assert "  context_length: 131072" in text
+        assert "    context_length: 131072" in text
+
     def test_missing_file_is_noop(self, tmp_path):
         assert _patch_hermes_model_config(tmp_path / "missing.yaml", "model.gguf") is False
 
@@ -585,6 +612,58 @@ class TestModelActivateRollback:
         assert '  default: "new-model.gguf"' in hermes_live.read_text(encoding="utf-8")
         assert '  default: "new-model.gguf"' in hermes_template.read_text(encoding="utf-8")
         assert ["docker", "restart", "dream-hermes"] in calls
+
+    def test_activation_preserves_hermes_context_from_env(self, tmp_path, monkeypatch):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        env_path.write_text(
+            "GPU_BACKEND=nvidia\n"
+            "GGUF_FILE=old-model.gguf\n"
+            "LLM_MODEL=old-model\n"
+            "CTX_SIZE=131072\n"
+            "MAX_CONTEXT=131072\n"
+            "OLLAMA_PORT=8080\n",
+            encoding="utf-8",
+        )
+        hermes_live = install_dir / "data" / "hermes" / "config.yaml"
+        hermes_template = install_dir / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        hermes_live.parent.mkdir(parents=True)
+        hermes_template.parent.mkdir(parents=True)
+        hermes_text = (
+            "model:\n"
+            "  default: \"old-model\"\n"
+            "  provider: \"custom\"\n"
+            "  base_url: \"http://host.docker.internal:8080/v1\"\n"
+            "  context_length: 32768\n"
+            "auxiliary:\n"
+            "  compression:\n"
+            "    context_length: 32768\n"
+        )
+        hermes_live.write_text(hermes_text, encoding="utf-8")
+        hermes_template.write_text(hermes_text, encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("DREAM_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+
+        def fake_run(cmd, **_kwargs):
+            stdout = '{"status": "ok"}' if cmd and cmd[0] == "curl" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        env_text = env_path.read_text(encoding="utf-8")
+        assert "MAX_CONTEXT=131072" in env_text
+        assert "CTX_SIZE=131072" in env_text
+        assert "  context_length: 131072" in hermes_live.read_text(encoding="utf-8")
+        assert "    context_length: 131072" in hermes_live.read_text(encoding="utf-8")
+        assert '  base_url: "http://host.docker.internal:8080/v1"' in hermes_live.read_text(encoding="utf-8")
 
     def test_activation_skips_hermes_restart_when_live_config_unreadable(self, tmp_path, monkeypatch):
         install_dir, _env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
