@@ -1,6 +1,6 @@
 # Dream Server Service Manifest Schema (v1)
 
-This directory contains the JSON Schema for Dream Server extension manifests: `service-manifest.v1.json`. Manifests are YAML files (`manifest.yaml`) in each service under `extensions/services/<service-id>/`. The schema defines the structure used by the service registry, `scripts/validate-manifests.sh`, and `dream config validate` so that **extensions work seamlessly for the Dream Server version you are on**.
+This directory contains the JSON Schema for Dream Server extension manifests: `service-manifest.v1.json`. Manifests are YAML files (`manifest.yaml`) in bundled services under `extensions/services/<service-id>/` and library services under `extensions/library/services/<service-id>/`. The schema is the source of truth for manifest structure used by the service registry, `scripts/validate-manifest-schema.sh`, `scripts/validate-manifests.sh`, and `dream config validate` so that **extensions work seamlessly for the Dream Server version you are on**.
 
 ## Schema version
 
@@ -55,13 +55,14 @@ Identifies the service and how the registry and compose resolver use it.
 | `port`                | integer | yes      | Internal port (0–65535). |
 | `external_port_env`   | string  | no       | Env var for external port (e.g. `WEBUI_PORT`). |
 | `external_port_default` | integer | no     | Default external port; used by registry and health checks. |
-| `health`              | string  | yes      | Health path (e.g. `/health`, `/`). Use `""` only for non-HTTP or one-shot services whose readiness is represented by container state/startup checks. |
-| `type`                | string  | no       | `docker` or `host-systemd`. |
+| `health`              | string  | conditional | Health path (e.g. `/health`, `/`). Required unless `host_network: true`; use `""` only for non-HTTP or one-shot services whose readiness is represented by container state/startup checks. |
+| `host_network`        | boolean | no       | Whether the service joins the host network namespace. Host-network services may omit `health` when readiness is represented by compose/native checks. |
+| `type`                | string  | yes      | `docker` or `host-systemd`. |
 | `startup_check`       | boolean | no       | When `false`, the host agent skips the post-install running-state poll and treats `docker compose up`'s clean exit as success. Set this on one-shot CLI / setup-only extensions whose containers intentionally exit after init (e.g. `aider`). Default: `true`. |
 | `startup_timeout`     | integer | no       | Seconds the host agent polls for the container to reach the `running` state before declaring install failed. Override the 15-second default for extensions with heavy initialization (postgres, clickhouse, JVM-based services). |
-| `gpu_backends`         | array   | no       | `amd`, `nvidia`, `apple`, `all`. Used for compose overlay selection. |
+| `gpu_backends`         | array   | no       | `amd`, `nvidia`, `apple`, `cpu`, `all`, or `none`. Used for compose overlay selection. |
 | `compose_file`        | string  | no       | Relative path to compose fragment (e.g. `compose.yaml`). |
-| `category`            | string  | no       | `core`, `recommended`, or `optional`. Affects default enable/disable. |
+| `category`            | string  | yes      | `core`, `recommended`, or `optional`. Affects default enable/disable. |
 | `depends_on`          | array   | no       | List of service ids this service depends on. |
 | `env_vars`            | array   | no       | List of `{ key, required?, secret?, description?, default? }` for documentation and validation. |
 | `setup_hook`          | string  | no       | Relative path to a setup script run during installation. |
@@ -83,7 +84,7 @@ Used by the installer and dashboard to show feature toggles (e.g. "Voice", "Work
 | `category`         | string | Grouping (e.g. `voice`, `creative`). |
 | `requirements`     | object | `services`, `services_any`, `vram_gb`, `disk_gb`. |
 | `priority`         | integer| Sort order. |
-| `gpu_backends`     | array  | Same as service. |
+| `gpu_backends`     | array  | Same as service: `amd`, `nvidia`, `apple`, `cpu`, `all`, or `none`. |
 
 Schema allows additional properties on feature objects for future use.
 
@@ -91,9 +92,10 @@ Schema allows additional properties on feature objects for future use.
 
 ## Validation
 
-- **Schema validation:** If the system has Python with `pyyaml` and `jsonschema`, `scripts/validate-manifests.sh` validates each manifest against `service-manifest.v1.json`. Missing modules result in a warning and only compatibility checks run.
-- **Compatibility check:** The script reads the core version from `manifest.json` and compares it to each extension’s `compatibility.dream_min` / `dream_max`, then prints a summary (ok, incompatible, ok-no-metadata).
-- **Running validation:** From the repo root: `bash scripts/validate-manifests.sh`. From an install: `./dream-cli config validate` (runs both env and manifest validation).
+- **JSON Schema is the source of truth:** `service-manifest.v1.json` defines the manifest contract. Keep required fields, enum values, type checks, and patterns in the JSON Schema so validation tools do not drift.
+- **Strict schema gate:** `scripts/validate-manifest-schema.sh` validates bundled and library manifests against `service-manifest.v1.json`. It requires Python with `PyYAML` and `jsonschema` and fails with a clear dependency message if either module is missing. This dependency is for CI, release checks, and developer manifest validation; normal Dream Server runtime should not require `jsonschema`.
+- **Compatibility check:** `scripts/validate-manifests.sh` reads the core version from `manifest.json` and compares it to each extension’s `compatibility.dream_min` / `dream_max`, then prints a summary (ok, incompatible, ok-no-metadata). If Python schema modules are missing, it warns and only compatibility checks run.
+- **Running validation:** From the repo root, run `bash scripts/validate-manifest-schema.sh` for strict JSON Schema validation, or `bash scripts/validate-manifests.sh` for compatibility-oriented validation. From an install: `./dream-cli config validate` runs env and manifest validation.
 
 ---
 

@@ -1,7 +1,7 @@
 #!/bin/bash
-# validate-manifest-schema.sh - Comprehensive manifest schema validator
+# validate-manifest-schema.sh - Manifest schema validator
 # Part of: scripts/
-# Purpose: Validate extension manifests against schema requirements
+# Purpose: Validate extension manifests against the checked-in JSON Schema.
 #
 # Usage: ./validate-manifest-schema.sh [--strict] [--verbose]
 
@@ -10,6 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_MANIFEST_DIRS="${SCRIPT_DIR}/../extensions/services:${SCRIPT_DIR}/../extensions/library/services"
 MANIFEST_DIRS="${DREAM_MANIFEST_DIRS:-$DEFAULT_MANIFEST_DIRS}"
+SCHEMA_PATH="${SCRIPT_DIR}/../extensions/library/schema/service-manifest.v1.json"
 
 STRICT_MODE=false
 VERBOSE=false
@@ -35,8 +36,10 @@ OPTIONS:
     -v, --verbose   Show detailed validation output
 
 DESCRIPTION:
-    Validates bundled and library extension manifest.yaml files against schema requirements.
-    Checks required fields, types, formats, and logical consistency.
+    Validates bundled and library extension manifest.yaml files against
+    extensions/library/schema/service-manifest.v1.json. The JSON Schema is the
+    source of truth for manifest validity; this script only adds non-blocking
+    operational warnings such as missing compose files.
 
 ENVIRONMENT:
     DREAM_MANIFEST_DIRS   Colon-separated manifest directories to validate.
@@ -67,6 +70,20 @@ success() {
     [[ "$VERBOSE" == "true" ]] && echo -e "${GREEN}✓${NC} $*"
 }
 
+check_python_deps() {
+    if ! python3 - <<'PYEOF' >/dev/null 2>&1
+import jsonschema  # noqa: F401
+import yaml  # noqa: F401
+PYEOF
+    then
+        echo -e "${RED}✗ ERROR:${NC} Manifest schema validation requires Python modules: PyYAML and jsonschema" >&2
+        echo "Install the developer/test validation dependencies, for example:" >&2
+        echo "  python3 -m pip install PyYAML jsonschema" >&2
+        echo "This dependency is only needed for manifest validation / CI checks, not normal Dream Server runtime." >&2
+        exit 1
+    fi
+}
+
 # Validate a single manifest
 validate_manifest() {
     local manifest_path="$1"
@@ -75,142 +92,77 @@ validate_manifest() {
 
     info "Validating: $service_name"
 
-    # Check YAML syntax
-    if ! python3 -c "import yaml; yaml.safe_load(open('$manifest_path'))" 2>/dev/null; then
-        error "$service_name: Invalid YAML syntax"
-        return 1
-    fi
+    python3 - "$manifest_path" "$SCHEMA_PATH" "$service_name" "$VERBOSE" <<'PYEOF'
+import json
+import os
+import sys
+from pathlib import Path
 
-    # Comprehensive validation
-    python3 - "$manifest_path" "$service_name" "$VERBOSE" <<'PYEOF'
-import yaml, sys, re, os
+import yaml
+import jsonschema
 
-manifest_path, service_name, verbose = sys.argv[1:4]
+manifest_path, schema_path, service_name, verbose = sys.argv[1:5]
 errors, warnings = [], []
 
-def error(msg): errors.append(msg); print(f"ERROR: {service_name}: {msg}", file=sys.stderr)
-def warn(msg): warnings.append(msg); print(f"WARNING: {service_name}: {msg}", file=sys.stderr)
-def info(msg): verbose == "true" and print(f"INFO: {service_name}: {msg}")
+def error(msg):
+    errors.append(msg)
+    print(f"ERROR: {service_name}: {msg}", file=sys.stderr)
 
-def has_text(value):
-    return isinstance(value, str) and len(value) > 0
+def warn(msg):
+    warnings.append(msg)
+    print(f"WARNING: {service_name}: {msg}", file=sys.stderr)
 
-def is_int(value):
-    return type(value) is int
+def info(msg):
+    if verbose == "true":
+        print(f"INFO: {service_name}: {msg}")
+
+def path_for(err):
+    return ".".join(str(part) for part in err.path) or "<root>"
 
 try:
-    manifest = yaml.safe_load(open(manifest_path))
-    if not isinstance(manifest, dict): error("Not a valid YAML mapping"); sys.exit(1)
+    with open(manifest_path, "r", encoding="utf-8") as fh:
+        manifest = yaml.safe_load(fh)
+except yaml.YAMLError as exc:
+    error(f"Invalid YAML syntax: {exc}")
+    sys.exit(1)
+except OSError as exc:
+    error(f"Cannot read manifest: {exc}")
+    sys.exit(1)
 
-    # schema_version
-    if manifest.get("schema_version") != "dream.services.v1":
-        error(f"Invalid schema_version: {manifest.get('schema_version')}")
-    else: info("schema_version: OK")
+try:
+    with open(schema_path, "r", encoding="utf-8") as fh:
+        schema = json.load(fh)
+except Exception as exc:
+    error(f"Cannot read JSON schema: {exc}")
+    sys.exit(1)
 
-    service = manifest.get("service", {})
-    if not isinstance(service, dict): error("Missing/invalid 'service' section"); sys.exit(1)
+validator_cls = jsonschema.validators.validator_for(schema)
+validator_cls.check_schema(schema)
+validator = validator_cls(schema)
 
-    # Required fields. host_network services use compose/native health checks and
-    # do not expose a Docker-mapped HTTP health path.
-    host_network = service.get("host_network", False)
-    if "host_network" in service and not isinstance(host_network, bool):
-        error("Invalid type for service.host_network")
+schema_errors = sorted(validator.iter_errors(manifest), key=lambda err: list(err.path))
+for err in schema_errors:
+    error(f"{path_for(err)}: {err.message}")
 
-    required_fields = {"id": str, "name": str, "port": int, "type": str, "category": str}
-    if host_network is not True:
-        required_fields["health"] = str
+# Non-authoritative operational warnings only. Validity is determined by the
+# JSON Schema above, so these warnings must not duplicate schema rules.
+if isinstance(manifest, dict):
+    service = manifest.get("service")
+    if isinstance(service, dict):
+        health = service.get("health")
+        if isinstance(health, str) and health and not health.startswith("/"):
+            warn(f"health should start with '/': {health}")
 
-    for field, typ in required_fields.items():
-        val = service.get(field)
-        if val is None: error(f"Missing service.{field}")
-        elif typ is int and not is_int(val): error(f"Invalid type for service.{field}")
-        elif typ is not int and not isinstance(val, typ): error(f"Invalid type for service.{field}")
-        else: info(f"service.{field}: OK")
+        compose_file = service.get("compose_file")
+        if isinstance(compose_file, str):
+            compose_path = os.path.join(os.path.dirname(manifest_path), compose_file)
+            if not os.path.exists(compose_path):
+                warn(f"compose_file not found: {compose_file}")
 
-    # Validate formats
-    if service.get("id") and not re.match(r'^[a-z0-9][a-z0-9-]*$', service["id"]):
-        error(f"Invalid service.id format: {service['id']}")
-    if "name" in service and not has_text(service.get("name")):
-        error("Invalid service.name")
-    if service.get("category") not in ["core", "recommended", "optional", None]:
-        error(f"Invalid category: {service.get('category')}")
-    if service.get("type") not in ["docker", "host-systemd", None]:
-        error(f"Invalid type: {service.get('type')}")
-    
-    port = service.get("port", 0)
-    if is_int(port) and not (0 <= port <= 65535):
-        error(f"Invalid port: {port}")
+if not errors:
+    info("JSON schema: OK")
 
-    if service.get("health") and not service["health"].startswith("/"):
-        warn(f"health should start with '/': {service['health']}")
-
-    # Validate lists
-    for alias in service.get("aliases", []):
-        if not re.match(r'^[a-z0-9][a-z0-9-]*$', str(alias)):
-            error(f"Invalid alias: {alias}")
-
-    for dep in service.get("depends_on", []):
-        if not re.match(r'^[a-z0-9][a-z0-9-]*$', str(dep)):
-            error(f"Invalid dependency: {dep}")
-
-    for backend in service.get("gpu_backends", []):
-        if backend not in ["amd", "nvidia", "apple", "cpu", "none", "all"]:
-            error(f"Invalid gpu_backend: {backend}")
-    if "gpu_backends" in service and not service.get("gpu_backends"):
-        error("service.gpu_backends must not be empty")
-
-    for env_var in service.get("env_vars", []):
-        if not isinstance(env_var, dict):
-            error("Invalid env_vars entry")
-            continue
-        if "key" not in env_var:
-            error("env_vars entry missing key")
-        elif not isinstance(env_var["key"], str):
-            error("Invalid env_vars key")
-        for bool_field in ["required", "secret"]:
-            if bool_field in env_var and not isinstance(env_var[bool_field], bool):
-                error(f"Invalid env_vars {bool_field}")
-        for str_field in ["description", "default"]:
-            if str_field in env_var and not isinstance(env_var[str_field], str):
-                error(f"Invalid env_vars {str_field}")
-        extra_keys = set(env_var) - {"key", "required", "secret", "description", "default"}
-        for key in sorted(extra_keys):
-            error(f"Invalid env_vars property: {key}")
-
-    for feature in manifest.get("features", []) or []:
-        if not isinstance(feature, dict):
-            error("Invalid feature entry")
-            continue
-        for field in ["id", "name", "description", "icon", "category", "requirements", "priority"]:
-            if field not in feature:
-                error(f"Missing feature.{field}")
-        if feature.get("id") and not re.match(r'^[a-z0-9][a-z0-9-]*$', str(feature["id"])):
-            error(f"Invalid feature.id format: {feature['id']}")
-        for field in ["name", "description", "icon", "category"]:
-            if field in feature and not has_text(feature.get(field)):
-                error(f"Invalid feature.{field}")
-        if "requirements" in feature and not isinstance(feature.get("requirements"), dict):
-            error("Invalid feature.requirements")
-        priority = feature.get("priority")
-        if priority is not None and (not is_int(priority) or priority < 1):
-            error(f"Invalid feature.priority: {priority}")
-        for backend in feature.get("gpu_backends", []):
-            if backend not in ["amd", "nvidia", "apple", "cpu", "none", "all"]:
-                error(f"Invalid feature gpu_backend: {backend}")
-
-    for tag in manifest.get("tags", []) or []:
-        if not isinstance(tag, str) or not re.match(r'^[a-z0-9][a-z0-9-]*$', tag):
-            error(f"Invalid tag: {tag}")
-
-    # Check compose_file exists
-    if service.get("compose_file"):
-        compose_path = os.path.join(os.path.dirname(manifest_path), service["compose_file"])
-        if not os.path.exists(compose_path):
-            warn(f"compose_file not found: {service['compose_file']}")
-
-    sys.exit(1 if errors else (2 if warnings else 0))
-except Exception as e:
-    print(f"ERROR: {service_name}: {e}", file=sys.stderr); sys.exit(1)
+sys.exit(1 if errors else (2 if warnings else 0))
 PYEOF
 
     case $? in
@@ -229,6 +181,8 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown: $1" >&2; usage; exit 2 ;;
     esac
 done
+
+check_python_deps
 
 # Main
 echo "Validating manifests in: $MANIFEST_DIRS"
