@@ -8,7 +8,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXTENSIONS_DIR="${SCRIPT_DIR}/../extensions/services"
+DEFAULT_MANIFEST_DIRS="${SCRIPT_DIR}/../extensions/services:${SCRIPT_DIR}/../extensions/library/services"
+MANIFEST_DIRS="${DREAM_MANIFEST_DIRS:-$DEFAULT_MANIFEST_DIRS}"
 
 STRICT_MODE=false
 VERBOSE=false
@@ -34,8 +35,12 @@ OPTIONS:
     -v, --verbose   Show detailed validation output
 
 DESCRIPTION:
-    Validates all extension manifest.yaml files against schema requirements.
+    Validates bundled and library extension manifest.yaml files against schema requirements.
     Checks required fields, types, formats, and logical consistency.
+
+ENVIRONMENT:
+    DREAM_MANIFEST_DIRS   Colon-separated manifest directories to validate.
+                          Defaults to extensions/services and extensions/library/services.
 
 EXAMPLES:
     $(basename "$0")              # Validate all manifests
@@ -99,19 +104,24 @@ try:
     service = manifest.get("service", {})
     if not isinstance(service, dict): error("Missing/invalid 'service' section"); sys.exit(1)
 
-    # Required fields
-    for field, typ in {"id": str, "name": str, "port": int, "health": str, "type": str, "category": str}.items():
+    # Required fields. host_network services use compose/native health checks and
+    # do not expose a Docker-mapped HTTP health path.
+    required_fields = {"id": str, "name": str, "port": int, "type": str, "category": str}
+    if not service.get("host_network", False):
+        required_fields["health"] = str
+
+    for field, typ in required_fields.items():
         val = service.get(field)
         if val is None: error(f"Missing service.{field}")
         elif not isinstance(val, typ): error(f"Invalid type for service.{field}")
         else: info(f"service.{field}: OK")
 
     # Validate formats
-    if service.get("id") and not re.match(r'^[a-z0-9_-]+$', service["id"]):
+    if service.get("id") and not re.match(r'^[a-z0-9][a-z0-9-]*$', service["id"]):
         error(f"Invalid service.id format: {service['id']}")
     if service.get("category") not in ["core", "recommended", "optional", None]:
         error(f"Invalid category: {service.get('category')}")
-    if service.get("type") not in ["docker", "native", "external", None]:
+    if service.get("type") not in ["docker", "host-systemd", None]:
         error(f"Invalid type: {service.get('type')}")
     
     port = service.get("port", 0)
@@ -123,16 +133,24 @@ try:
 
     # Validate lists
     for alias in service.get("aliases", []):
-        if not re.match(r'^[a-z0-9_-]+$', str(alias)):
+        if not re.match(r'^[a-z0-9][a-z0-9-]*$', str(alias)):
             error(f"Invalid alias: {alias}")
 
     for dep in service.get("depends_on", []):
-        if not re.match(r'^[a-z0-9_-]+$', str(dep)):
+        if not re.match(r'^[a-z0-9][a-z0-9-]*$', str(dep)):
             error(f"Invalid dependency: {dep}")
 
     for backend in service.get("gpu_backends", []):
-        if backend not in ["amd", "nvidia", "apple", "cpu", "all"]:
+        if backend not in ["amd", "nvidia", "apple", "cpu", "none", "all"]:
             error(f"Invalid gpu_backend: {backend}")
+
+    for feature in manifest.get("features", []) or []:
+        if not isinstance(feature, dict):
+            error("Invalid feature entry")
+            continue
+        for backend in feature.get("gpu_backends", []):
+            if backend not in ["amd", "nvidia", "apple", "cpu", "none", "all"]:
+                error(f"Invalid feature gpu_backend: {backend}")
 
     # Check compose_file exists
     if service.get("compose_file"):
@@ -163,21 +181,25 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Main
-echo "Validating manifests in: $EXTENSIONS_DIR"
+echo "Validating manifests in: $MANIFEST_DIRS"
 echo ""
 
-[[ ! -d "$EXTENSIONS_DIR" ]] && { echo -e "${RED}ERROR:${NC} Not found: $EXTENSIONS_DIR" >&2; exit 1; }
-
 TOTAL=0 VALID=0
-for dir in "$EXTENSIONS_DIR"/*/; do
-    [[ ! -d "$dir" ]] && continue
-    manifest=""
-    for name in manifest.yaml manifest.yml; do
-        [[ -f "$dir/$name" ]] && manifest="$dir/$name" && break
+IFS=':' read -r -a MANIFEST_DIR_ARRAY <<< "$MANIFEST_DIRS"
+for extensions_dir in "${MANIFEST_DIR_ARRAY[@]}"; do
+    [[ -z "$extensions_dir" ]] && continue
+    [[ ! -d "$extensions_dir" ]] && { echo -e "${RED}ERROR:${NC} Not found: $extensions_dir" >&2; exit 1; }
+
+    for dir in "$extensions_dir"/*/; do
+        [[ ! -d "$dir" ]] && continue
+        manifest=""
+        for name in manifest.yaml manifest.yml; do
+            [[ -f "$dir/$name" ]] && manifest="$dir/$name" && break
+        done
+        [[ -z "$manifest" ]] && { warn "$(basename "$dir"): No manifest"; continue; }
+        ((TOTAL++)) || true
+        validate_manifest "$manifest" && { ((VALID++)) || true; }
     done
-    [[ -z "$manifest" ]] && { warn "$(basename "$dir"): No manifest"; continue; }
-    ((TOTAL++)) || true
-    validate_manifest "$manifest" && { ((VALID++)) || true; }
 done
 
 # Summary
