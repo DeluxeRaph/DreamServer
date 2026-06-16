@@ -8,9 +8,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_MANIFEST_DIRS="${SCRIPT_DIR}/../extensions/services:${SCRIPT_DIR}/../extensions/library/services"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MANIFEST_FILE="${ROOT_DIR}/manifest.json"
+DEFAULT_MANIFEST_DIRS="${ROOT_DIR}/extensions/services:${ROOT_DIR}/extensions/library/services"
 MANIFEST_DIRS="${DREAM_MANIFEST_DIRS:-$DEFAULT_MANIFEST_DIRS}"
-SCHEMA_PATH="${SCRIPT_DIR}/../extensions/library/schema/service-manifest.v1.json"
+SCHEMA_PATH=""
 
 STRICT_MODE=false
 VERBOSE=false
@@ -36,10 +38,10 @@ OPTIONS:
     -v, --verbose   Show detailed validation output
 
 DESCRIPTION:
-    Validates bundled and library extension manifest.yaml files against
-    extensions/library/schema/service-manifest.v1.json. The JSON Schema is the
-    source of truth for manifest validity; this script only adds non-blocking
-    operational warnings such as missing compose files.
+    Validates bundled and library extension manifest.yaml files against the
+    schema declared by manifest.json at contracts.extensions.serviceManifestSchema.
+    The JSON Schema is the source of truth for manifest validity; this script
+    only adds non-blocking operational warnings such as missing compose files.
 
 ENVIRONMENT:
     DREAM_MANIFEST_DIRS   Colon-separated manifest directories to validate.
@@ -82,6 +84,30 @@ PYEOF
         echo "This dependency is only needed for manifest validation / CI checks, not normal Dream Server runtime." >&2
         exit 1
     fi
+}
+
+resolve_schema_path() {
+    python3 - "$MANIFEST_FILE" "$ROOT_DIR" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+manifest_file = Path(sys.argv[1])
+root_dir = Path(sys.argv[2])
+try:
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    schema_rel = manifest["contracts"]["extensions"]["serviceManifestSchema"]
+except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    print(f"Cannot resolve contracts.extensions.serviceManifestSchema from {manifest_file}: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+schema_path = root_dir / schema_rel
+if not schema_path.is_file():
+    print(f"Declared service manifest schema not found: {schema_rel}", file=sys.stderr)
+    sys.exit(1)
+
+print(schema_path)
+PYEOF
 }
 
 # Validate a single manifest
@@ -183,9 +209,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 check_python_deps
+SCHEMA_PATH="$(resolve_schema_path)"
 
 # Main
 echo "Validating manifests in: $MANIFEST_DIRS"
+echo "Schema: ${SCHEMA_PATH#$ROOT_DIR/}"
 echo ""
 
 TOTAL=0 VALID=0

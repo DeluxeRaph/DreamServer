@@ -7,7 +7,15 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VALIDATOR="$ROOT_DIR/scripts/validate-manifest-schema.sh"
-SCHEMA="$ROOT_DIR/extensions/library/schema/service-manifest.v1.json"
+SCHEMA="$ROOT_DIR/$(python3 - "$ROOT_DIR/manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(manifest["contracts"]["extensions"]["serviceManifestSchema"])
+PY
+)"
+LIBRARY_SCHEMA="$ROOT_DIR/extensions/library/schema/service-manifest.v1.json"
 
 assert_success() {
   local label="$1"
@@ -57,8 +65,9 @@ if grep -qi "Traceback" /tmp/validate-manifest-schema-missing-deps.log; then
 fi
 echo "[PASS] missing Python validation dependencies fail with a clean message"
 
-python3 - "$ROOT_DIR" "$VALIDATOR" "$SCHEMA" <<'PY'
+python3 - "$ROOT_DIR" "$VALIDATOR" "$SCHEMA" "$LIBRARY_SCHEMA" <<'PY'
 import copy
+import filecmp
 import json
 import os
 import subprocess
@@ -71,6 +80,7 @@ import yaml
 ROOT = Path(sys.argv[1])
 VALIDATOR = Path(sys.argv[2])
 SCHEMA = Path(sys.argv[3])
+LIBRARY_SCHEMA = Path(sys.argv[4])
 
 try:
     import jsonschema
@@ -79,6 +89,15 @@ except ImportError as exc:  # pragma: no cover - minimal CI images should fail l
         "jsonschema is required for manifest schema source-of-truth tests; "
         "install the repo test dependencies or add jsonschema to the test image"
     ) from exc
+
+if SCHEMA != ROOT / "extensions/schema/service-manifest.v1.json":
+    raise SystemExit(f"[FAIL] manifest.json should declare extensions/schema/service-manifest.v1.json, got {SCHEMA}")
+if not filecmp.cmp(SCHEMA, LIBRARY_SCHEMA, shallow=False):
+    raise SystemExit(
+        "[FAIL] library service manifest schema diverged from the manifest.json-declared schema; "
+        "keep extensions/library/schema/service-manifest.v1.json synchronized or give it a distinct contract/$id"
+    )
+print("[PASS] manifest.json-declared and library schemas are synchronized")
 
 schema = json.loads(SCHEMA.read_text())
 validator_cls = jsonschema.validators.validator_for(schema)
@@ -161,6 +180,9 @@ case("base manifest", lambda m: None)
 case("cpu gpu backend", lambda m: (m["service"].update(gpu_backends=["cpu"]), m["features"][0].update(gpu_backends=["cpu"])))
 case("host_network service may omit health", lambda m: (m["service"].update(id="hostnet-service", name="Host Network Service", host_network=True, port=0, gpu_backends=["none"]), m["service"].pop("health"), m["features"][0].update(id="hostnet-service", requirements={"services": ["hostnet-service"]}, gpu_backends=["none"])))
 case("host-systemd service type", lambda m: m["service"].update(type="host-systemd"))
+case("feature launch service", lambda m: m["features"][0].update(launch={"type": "service", "service": "test-service", "path": "/"}))
+case("service startup timeout", lambda m: m["service"].update(startup_timeout=600))
+case("feature vram_mb requirement", lambda m: m["features"][0]["requirements"].update(vram_mb=512))
 case("missing features", lambda m: m.pop("features"))
 case("missing service.gpu_backends", lambda m: m["service"].pop("gpu_backends"))
 case("health warning still schema-valid", lambda m: m["service"].update(health="health"))
@@ -170,6 +192,8 @@ case("optional strings may be empty", lambda m: (m["service"].update(host_env=""
 # expected validity here; service-manifest.v1.json decides, and the CLI must
 # match that decision.
 case("manifest without top-level service", lambda m: m.pop("service"))
+case("service missing type", lambda m: m["service"].pop("type"))
+case("service missing category", lambda m: m["service"].pop("category"))
 case("null features", lambda m: m.update(features=None))
 case("non-host-network service without health", lambda m: m["service"].pop("health"))
 case("invalid service gpu backend", lambda m: m["service"].update(gpu_backends=["quantum"]))
@@ -188,6 +212,9 @@ case("invalid feature priority zero", lambda m: m["features"][0].update(priority
 case("boolean feature priority", lambda m: m["features"][0].update(priority=True))
 case("empty feature description", lambda m: m["features"][0].update(description=""))
 case("string feature requirements", lambda m: m["features"][0].update(requirements="gpu"))
+case("feature launch bogus type", lambda m: m["features"][0].update(launch={"type": "bogus"}))
+case("service startup timeout above maximum", lambda m: m["service"].update(startup_timeout=999))
+case("service ui_path without slash", lambda m: m["service"].update(ui_path="dashboard"))
 case("invalid tag format", lambda m: m.update(tags=["bad_tag"]))
 case("invalid depends_on service id", lambda m: m["service"].update(depends_on=["bad_dep"]))
 case("boolean external port default", lambda m: m["service"].update(external_port_default=True))
