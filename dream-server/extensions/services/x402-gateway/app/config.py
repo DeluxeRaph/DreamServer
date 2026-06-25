@@ -40,7 +40,7 @@ class AuditConfig(BaseModel):
 class PriceConfig(BaseModel):
     amount: str
     currency: str = "USDC"
-    mode: Literal["per_request"] = "per_request"
+    mode: Literal["per_request", "streaming"] = "streaming"
 
     @field_validator("amount")
     @classmethod
@@ -86,13 +86,13 @@ class RouteRule(BaseModel):
 
 
 class VendorOperatorConfig(BaseModel):
-    displayName: str = "Dream Server operator"
+    displayName: str = "DeluxeCompute"
 
 
 class VendorConfig(BaseModel):
-    id: str = "dream-server-local-node"
-    name: str = "Dream Server local node"
-    description: str = "Local AI capability vendor node"
+    id: str = "deluxecompute-jetson-x402-node"
+    name: str = "DeluxeCompute"
+    description: str = "DeluxeCompute Jetson-hosted local AI capability vendor node"
     protocolVersion: str = "dream-server-v1"
     version: str = "0.1.0"
     operator: VendorOperatorConfig = Field(default_factory=VendorOperatorConfig)
@@ -149,8 +149,8 @@ class CapabilityConfig(BaseModel):
     description: str
     path: str
     streaming: bool = True
-    riskLevel: Literal["low", "medium", "high"] = "medium"
     pricing: PriceConfig
+    requires: list[str] = Field(default_factory=lambda: ["hermes", "llama-server"])
     limits: CapabilityLimits = Field(default_factory=CapabilityLimits)
     inputSchema: dict[str, object] = Field(default_factory=default_capability_input_schema)
     outputSchema: dict[str, object] = Field(default_factory=default_capability_output_schema)

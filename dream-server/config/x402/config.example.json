@@ -23,13 +23,13 @@
     "logUnpaidAttempts": true
   },
   "vendor": {
-    "id": "dream-server-local-node",
-    "name": "Dream Server local node",
-    "description": "Local AI capability vendor node for chat, coding help, and coding review",
+    "id": "deluxecompute-jetson-x402-node",
+    "name": "DeluxeCompute",
+    "description": "DeluxeCompute Jetson-hosted local AI capability vendor node",
     "protocolVersion": "dream-server-v1",
     "version": "0.1.0",
     "operator": {
-      "displayName": "Dream Server operator"
+      "displayName": "DeluxeCompute"
     }
   },
   "limits": {
@@ -54,9 +54,8 @@
       "description": "General local LLM chat completion through Dream Server.",
       "path": "/v1/capabilities/local_chat",
       "streaming": true,
-      "riskLevel": "low",
       "pricing": {
-        "mode": "per_request",
+        "mode": "streaming",
         "amount": "0.001",
         "currency": "USDC"
       },
@@ -69,6 +68,10 @@
           "prompt": "Explain local AI in one paragraph.",
           "stream": true
         }
+      ],
+      "requires": [
+        "hermes",
+        "llama-server"
       ]
     },
     {
@@ -76,9 +79,8 @@
       "description": "Explain, generate, or debug pasted code snippets.",
       "path": "/v1/capabilities/coding_help",
       "streaming": true,
-      "riskLevel": "medium",
       "pricing": {
-        "mode": "per_request",
+        "mode": "streaming",
         "amount": "0.003",
         "currency": "USDC"
       },
@@ -94,6 +96,10 @@
           },
           "stream": true
         }
+      ],
+      "requires": [
+        "hermes",
+        "llama-server"
       ]
     },
     {
@@ -101,9 +107,8 @@
       "description": "Review pasted code or diffs and return structured findings.",
       "path": "/v1/capabilities/coding_review",
       "streaming": true,
-      "riskLevel": "medium",
       "pricing": {
-        "mode": "per_request",
+        "mode": "streaming",
         "amount": "0.005",
         "currency": "USDC"
       },
@@ -125,6 +130,10 @@
           },
           "stream": false
         }
+      ],
+      "requires": [
+        "hermes",
+        "llama-server"
       ]
     }
   ],
@@ -133,10 +142,12 @@
       "name": "local_chat",
       "kind": "http_route",
       "path": "/v1/capabilities/local_chat",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "upstream": "http://llama-server:8080/v1/chat/completions",
       "price": {
-        "mode": "per_request",
+        "mode": "streaming",
         "amount": "0.001",
         "currency": "USDC"
       },
@@ -150,10 +161,12 @@
       "name": "coding_help",
       "kind": "http_route",
       "path": "/v1/capabilities/coding_help",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "upstream": "http://llama-server:8080/v1/chat/completions",
       "price": {
-        "mode": "per_request",
+        "mode": "streaming",
         "amount": "0.003",
         "currency": "USDC"
       },
@@ -167,10 +180,12 @@
       "name": "coding_review",
       "kind": "http_route",
       "path": "/v1/capabilities/coding_review",
-      "methods": ["POST"],
+      "methods": [
+        "POST"
+      ],
       "upstream": "http://llama-server:8080/v1/chat/completions",
       "price": {
-        "mode": "per_request",
+        "mode": "streaming",
         "amount": "0.005",
         "currency": "USDC"
       },

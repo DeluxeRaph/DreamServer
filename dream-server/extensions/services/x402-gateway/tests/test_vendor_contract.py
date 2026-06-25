@@ -49,24 +49,24 @@ CONFIG = GatewayConfig.model_validate(
                 "description": "General local LLM chat completion.",
                 "path": "/v1/capabilities/local_chat",
                 "streaming": True,
-                "riskLevel": "low",
-                "pricing": {"mode": "per_request", "amount": "0.001", "currency": "USDC"},
+                "pricing": {"mode": "streaming", "amount": "0.001", "currency": "USDC"},
+                "requires": ["hermes", "llama-server"],
             },
             {
                 "id": "coding_help",
                 "description": "Explain, generate, or debug pasted code snippets.",
                 "path": "/v1/capabilities/coding_help",
                 "streaming": True,
-                "riskLevel": "medium",
-                "pricing": {"mode": "per_request", "amount": "0.003", "currency": "USDC"},
+                "pricing": {"mode": "streaming", "amount": "0.003", "currency": "USDC"},
+                "requires": ["hermes", "llama-server"],
             },
             {
                 "id": "coding_review",
                 "description": "Review pasted code or diffs and return findings.",
                 "path": "/v1/capabilities/coding_review",
                 "streaming": True,
-                "riskLevel": "medium",
-                "pricing": {"mode": "per_request", "amount": "0.005", "currency": "USDC"},
+                "pricing": {"mode": "streaming", "amount": "0.005", "currency": "USDC"},
+                "requires": ["hermes", "llama-server"],
             },
         ],
         "rules": [
@@ -76,7 +76,7 @@ CONFIG = GatewayConfig.model_validate(
                 "path": "/v1/capabilities/local_chat",
                 "methods": ["POST"],
                 "upstream": "http://llama-server:8080/v1/chat/completions",
-                "price": {"mode": "per_request", "amount": "0.001", "currency": "USDC"},
+                "price": {"mode": "streaming", "amount": "0.001", "currency": "USDC"},
             }
         ],
     }
@@ -174,11 +174,12 @@ def test_capabilities_advertise_v1_sellable_services() -> None:
     capabilities = {capability["id"]: capability for capability in payload["capabilities"]}
     assert set(capabilities) == {"local_chat", "coding_help", "coding_review"}
     assert capabilities["local_chat"]["streaming"] is True
-    assert capabilities["local_chat"]["riskLevel"] == "low"
+    assert capabilities["local_chat"]["requires"] == ["hermes", "llama-server"]
+    assert "riskLevel" not in capabilities["local_chat"]
     assert capabilities["coding_review"]["pricing"] == {
         "amount": "0.005",
         "currency": "USDC",
-        "mode": "per_request",
+        "mode": "streaming",
     }
 
 

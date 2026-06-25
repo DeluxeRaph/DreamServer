@@ -118,7 +118,6 @@ def _capability_from_rule(rule: RouteRule) -> CapabilityConfig:
         description=rule.metadata.description or rule.name,
         path=rule.path,
         streaming=True,
-        riskLevel="medium",
         pricing=rule.price,
     )
 
