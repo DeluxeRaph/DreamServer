@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from urllib.parse import urljoin
-
 import httpx
 from fastapi import Request, Response
+from starlette.background import BackgroundTask
+from starlette.responses import StreamingResponse
 
 from .audit import AuditLog
 from .config import RouteRule
@@ -49,12 +49,13 @@ async def proxy_request(
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
 
-    upstream = await client.request(
+    stream_context = client.stream(
         request.method,
         upstream_url,
         content=body,
         headers=_forward_headers(request),
     )
+    upstream = await stream_context.__aenter__()
 
     audit.write(
         "paid_request_forwarded",
@@ -65,9 +66,11 @@ async def proxy_request(
             "status_code": upstream.status_code,
         },
     )
-    return Response(
-        content=upstream.content,
+
+    return StreamingResponse(
+        upstream.aiter_bytes(),
         status_code=upstream.status_code,
         headers=_response_headers(upstream),
         media_type=upstream.headers.get("content-type"),
+        background=BackgroundTask(stream_context.__aexit__, None, None, None),
     )

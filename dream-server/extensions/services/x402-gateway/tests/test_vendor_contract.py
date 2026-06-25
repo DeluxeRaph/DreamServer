@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+import httpx
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("X402_CONFIG_PATH", "../../../config/x402/config.example.json")
@@ -82,8 +83,53 @@ CONFIG = GatewayConfig.model_validate(
 )
 
 
+class StreamingOnlyClient:
+    def __init__(self) -> None:
+        self.stream_called = False
+
+    def stream(self, method: str, url: str, **kwargs: object) -> "StreamingOnlyClient":
+        self.stream_called = True
+        self.method = method
+        self.url = url
+        self.kwargs = kwargs
+        return self
+
+    async def __aenter__(self) -> "StreamingOnlyClient":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        return None
+
+    @property
+    def status_code(self) -> int:
+        return 200
+
+    @property
+    def headers(self) -> httpx.Headers:
+        return httpx.Headers({"content-type": "text/event-stream"})
+
+    async def aiter_bytes(self):
+        yield b"data: first\n\n"
+        yield b"data: second\n\n"
+
+
+class NoopAudit:
+    def write(self, event: str, payload: dict[str, object]) -> None:
+        self.event = event
+        self.payload = payload
+
+
 def client() -> TestClient:
     return TestClient(create_app(CONFIG))
+
+
+def client_with_streaming_upstream() -> tuple[TestClient, StreamingOnlyClient, NoopAudit]:
+    app = create_app(CONFIG)
+    streaming_client = StreamingOnlyClient()
+    audit = NoopAudit()
+    app.state.http = streaming_client
+    app.state.audit = audit
+    return TestClient(app), streaming_client, audit
 
 
 def test_vendor_contract_control_endpoints_are_public() -> None:
@@ -144,3 +190,23 @@ def test_limits_advertise_streaming_and_request_bounds() -> None:
     assert payload["maxPromptChars"] == 50000
     assert payload["timeouts"] == {"defaultSeconds": 60, "maxSeconds": 300}
     assert payload["rateLimits"] == {"requestsPerMinute": 10, "concurrentRequests": 2}
+
+
+def test_paid_capability_proxy_uses_streaming_upstream() -> None:
+    app_client, upstream, audit = client_with_streaming_upstream()
+
+    with app_client.stream(
+        "POST",
+        "/v1/capabilities/local_chat?trace=1",
+        json={"model": "local", "messages": [{"role": "user", "content": "hello"}], "stream": True},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert body == b"data: first\n\ndata: second\n\n"
+    assert upstream.stream_called is True
+    assert upstream.method == "POST"
+    assert upstream.url == "http://llama-server:8080/v1/chat/completions?trace=1"
+    assert audit.event == "paid_request_forwarded"
+    assert audit.payload["status_code"] == 200
