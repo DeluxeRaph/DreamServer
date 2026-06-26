@@ -7,6 +7,31 @@ from typing import Literal
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
+class ModelModalities(BaseModel):
+    input: list[str] = Field(default_factory=lambda: ["text"])
+    output: list[str] = Field(default_factory=lambda: ["text"])
+
+
+class ModelHardware(BaseModel):
+    device: str = "unknown"
+    vramGb: int | None = None
+
+
+class ModelConfig(BaseModel):
+    id: str
+    displayName: str
+    family: str
+    provider: str = "local"
+    backend: str
+    parameterCount: str | None = None
+    quantization: str | None = None
+    contextWindow: int
+    maxOutputTokens: int
+    modalities: ModelModalities = Field(default_factory=ModelModalities)
+    hardware: ModelHardware = Field(default_factory=ModelHardware)
+    status: Literal["available", "loading", "unavailable"] = "available"
+
+
 class SellerConfig(BaseModel):
     network: str = "eip155:84532"
     asset: str = "USDC"
@@ -146,9 +171,13 @@ def default_capability_output_schema() -> dict[str, object]:
 
 class CapabilityConfig(BaseModel):
     id: str
+    type: str = "chat.completions"
     description: str
     path: str
+    method: str = "POST"
+    models: list[str] = Field(default_factory=list)
     streaming: bool = True
+    streamFormat: Literal["sse", "json"] = "sse"
     pricing: PriceConfig
     requires: list[str] = Field(default_factory=lambda: ["hermes", "llama-server"])
     limits: CapabilityLimits = Field(default_factory=CapabilityLimits)
@@ -163,6 +192,11 @@ class CapabilityConfig(BaseModel):
             raise ValueError("capability path must start with /")
         return value
 
+    @field_validator("method")
+    @classmethod
+    def normalize_method(cls, value: str) -> str:
+        return value.upper()
+
 
 class GatewayConfig(BaseModel):
     enabled: bool = True
@@ -172,6 +206,7 @@ class GatewayConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
     vendor: VendorConfig = Field(default_factory=VendorConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    models: list[ModelConfig] = Field(default_factory=list)
     capabilities: list[CapabilityConfig] = Field(default_factory=list)
     rules: list[RouteRule] = Field(default_factory=list)
 

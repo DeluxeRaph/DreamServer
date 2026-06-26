@@ -48,12 +48,38 @@
       "concurrentRequests": 2
     }
   },
+  "models": [
+    {
+      "id": "llama-3.1-8b-instruct-q4",
+      "displayName": "Llama 3.1 8B Instruct Q4",
+      "family": "llama",
+      "provider": "local",
+      "backend": "llama.cpp",
+      "parameterCount": "8B",
+      "quantization": "Q4_K_M",
+      "contextWindow": 8192,
+      "maxOutputTokens": 4096,
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "hardware": {
+        "device": "gpu",
+        "vramGb": 16
+      },
+      "status": "available"
+    }
+  ],
   "capabilities": [
     {
       "id": "local_chat",
+      "type": "chat.completions",
       "description": "General local LLM chat completion through Dream Server.",
       "path": "/v1/capabilities/local_chat",
+      "method": "POST",
+      "models": ["llama-3.1-8b-instruct-q4"],
       "streaming": true,
+      "streamFormat": "sse",
       "pricing": {
         "mode": "streaming",
         "amount": "0.001",
@@ -76,9 +102,13 @@
     },
     {
       "id": "coding_help",
+      "type": "code.help",
       "description": "Explain, generate, or debug pasted code snippets.",
       "path": "/v1/capabilities/coding_help",
+      "method": "POST",
+      "models": ["llama-3.1-8b-instruct-q4"],
       "streaming": true,
+      "streamFormat": "sse",
       "pricing": {
         "mode": "streaming",
         "amount": "0.003",
@@ -104,9 +134,13 @@
     },
     {
       "id": "coding_review",
+      "type": "code.review",
       "description": "Review pasted code or diffs and return structured findings.",
       "path": "/v1/capabilities/coding_review",
+      "method": "POST",
+      "models": ["llama-3.1-8b-instruct-q4"],
       "streaming": true,
+      "streamFormat": "sse",
       "pricing": {
         "mode": "streaming",
         "amount": "0.005",

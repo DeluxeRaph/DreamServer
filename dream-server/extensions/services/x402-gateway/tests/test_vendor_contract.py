@@ -43,28 +43,56 @@ CONFIG = GatewayConfig.model_validate(
             "timeouts": {"defaultSeconds": 60, "maxSeconds": 300},
             "rateLimits": {"requestsPerMinute": 10, "concurrentRequests": 2},
         },
+        "models": [
+            {
+                "id": "llama-3.1-8b-instruct-q4",
+                "displayName": "Llama 3.1 8B Instruct Q4",
+                "family": "llama",
+                "provider": "local",
+                "backend": "llama.cpp",
+                "parameterCount": "8B",
+                "quantization": "Q4_K_M",
+                "contextWindow": 8192,
+                "maxOutputTokens": 4096,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "hardware": {"device": "gpu", "vramGb": 16},
+                "status": "available",
+            }
+        ],
         "capabilities": [
             {
                 "id": "local_chat",
+                "type": "chat.completions",
                 "description": "General local LLM chat completion.",
                 "path": "/v1/capabilities/local_chat",
+                "method": "POST",
+                "models": ["llama-3.1-8b-instruct-q4"],
                 "streaming": True,
+                "streamFormat": "sse",
                 "pricing": {"mode": "streaming", "amount": "0.001", "currency": "USDC"},
                 "requires": ["hermes", "llama-server"],
             },
             {
                 "id": "coding_help",
+                "type": "code.help",
                 "description": "Explain, generate, or debug pasted code snippets.",
                 "path": "/v1/capabilities/coding_help",
+                "method": "POST",
+                "models": ["llama-3.1-8b-instruct-q4"],
                 "streaming": True,
+                "streamFormat": "sse",
                 "pricing": {"mode": "streaming", "amount": "0.003", "currency": "USDC"},
                 "requires": ["hermes", "llama-server"],
             },
             {
                 "id": "coding_review",
+                "type": "code.review",
                 "description": "Review pasted code or diffs and return findings.",
                 "path": "/v1/capabilities/coding_review",
+                "method": "POST",
+                "models": ["llama-3.1-8b-instruct-q4"],
                 "streaming": True,
+                "streamFormat": "sse",
                 "pricing": {"mode": "streaming", "amount": "0.005", "currency": "USDC"},
                 "requires": ["hermes", "llama-server"],
             },
@@ -137,9 +165,49 @@ def test_vendor_contract_control_endpoints_are_public() -> None:
 
     assert app_client.get("/v1/health").status_code == 200
     assert app_client.get("/v1/health/ready").status_code == 200
+    assert app_client.get("/v1/provider").status_code == 200
     assert app_client.get("/v1/vendor").status_code == 200
+    assert app_client.get("/v1/models").status_code == 200
     assert app_client.get("/v1/limits").status_code == 200
     assert app_client.get("/v1/capabilities").status_code == 200
+
+
+def test_provider_endpoint_advertises_marketplace_registration_contract() -> None:
+    payload = client().get("/v1/provider").json()
+
+    assert payload["id"] == "dream-test-node"
+    assert payload["protocolVersion"] == "dream-server-v1"
+    assert payload["providerType"] == "dream-server"
+    assert payload["endpoints"] == {
+        "capabilities": "/v1/capabilities",
+        "health": "/v1/health",
+        "models": "/v1/models",
+        "quote": "/v1/quote",
+    }
+
+
+def test_models_endpoint_advertises_available_model_metadata() -> None:
+    payload = client().get("/v1/models").json()
+
+    assert payload == {
+        "provider": {"id": "dream-test-node", "name": "Dream Test Node"},
+        "models": [
+            {
+                "id": "llama-3.1-8b-instruct-q4",
+                "displayName": "Llama 3.1 8B Instruct Q4",
+                "family": "llama",
+                "provider": "local",
+                "backend": "llama.cpp",
+                "parameterCount": "8B",
+                "quantization": "Q4_K_M",
+                "contextWindow": 8192,
+                "maxOutputTokens": 4096,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "hardware": {"device": "gpu", "vramGb": 16},
+                "status": "available",
+            }
+        ],
+    }
 
 
 def test_health_payload_uses_vendor_protocol_metadata() -> None:
@@ -174,6 +242,10 @@ def test_capabilities_advertise_v1_sellable_services() -> None:
     capabilities = {capability["id"]: capability for capability in payload["capabilities"]}
     assert set(capabilities) == {"local_chat", "coding_help", "coding_review"}
     assert capabilities["local_chat"]["streaming"] is True
+    assert capabilities["local_chat"]["streamFormat"] == "sse"
+    assert capabilities["local_chat"]["type"] == "chat.completions"
+    assert capabilities["local_chat"]["method"] == "POST"
+    assert capabilities["local_chat"]["models"] == ["llama-3.1-8b-instruct-q4"]
     assert capabilities["local_chat"]["requires"] == ["hermes", "llama-server"]
     assert "riskLevel" not in capabilities["local_chat"]
     assert capabilities["coding_review"]["pricing"] == {
@@ -191,6 +263,46 @@ def test_limits_advertise_streaming_and_request_bounds() -> None:
     assert payload["maxPromptChars"] == 50000
     assert payload["timeouts"] == {"defaultSeconds": 60, "maxSeconds": 300}
     assert payload["rateLimits"] == {"requestsPerMinute": 10, "concurrentRequests": 2}
+
+
+def test_quote_endpoint_returns_marketplace_quote_for_capability_model_pair() -> None:
+    response = client().post(
+        "/v1/quote",
+        json={
+            "capability": "local_chat",
+            "model": "llama-3.1-8b-instruct-q4",
+            "input": {"prompt": "hello"},
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["quoteId"].startswith("quote_")
+    assert payload["providerId"] == "dream-test-node"
+    assert payload["capability"] == "local_chat"
+    assert payload["model"] == "llama-3.1-8b-instruct-q4"
+    assert payload["price"] == {"amount": "0.001", "currency": "USDC", "mode": "streaming"}
+    assert payload["payment"] == {
+        "protocol": "x402",
+        "method": "POST",
+        "resource": "/v1/capabilities/local_chat",
+    }
+    assert payload["streaming"] is True
+
+
+def test_quote_endpoint_rejects_unknown_capability_model_pair() -> None:
+    response = client().post(
+        "/v1/quote",
+        json={
+            "capability": "local_chat",
+            "model": "missing-model",
+            "input": {"prompt": "hello"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "model_not_supported_for_capability"
 
 
 def test_paid_capability_proxy_uses_streaming_upstream() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from uuid import uuid4
 
 import httpx
 import uvicorn
@@ -44,9 +45,20 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     async def ready() -> dict[str, object]:
         return _readiness_payload(loaded)
 
+    @app.get("/v1/provider")
+    async def provider() -> dict[str, object]:
+        return _provider_payload(loaded)
+
     @app.get("/v1/vendor")
     async def vendor() -> dict[str, object]:
         return loaded.vendor.model_dump(mode="json")
+
+    @app.get("/v1/models")
+    async def models() -> dict[str, object]:
+        return {
+            "provider": {"id": loaded.vendor.id, "name": loaded.vendor.name},
+            "models": [model.model_dump(mode="json") for model in loaded.models],
+        }
 
     @app.get("/v1/limits")
     async def limits() -> dict[str, object]:
@@ -61,6 +73,10 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 for capability in _capabilities(loaded)
             ],
         }
+
+    @app.post("/v1/quote")
+    async def quote(payload: dict[str, object]) -> dict[str, object]:
+        return _quote_payload(loaded, payload)
 
     if loaded.enabled and not loaded.policy.devBypass:
         app.add_middleware(
@@ -93,6 +109,18 @@ def _health_payload(config: GatewayConfig) -> dict[str, object]:
     }
 
 
+def _provider_payload(config: GatewayConfig) -> dict[str, object]:
+    payload = config.vendor.model_dump(mode="json")
+    payload["providerType"] = "dream-server"
+    payload["endpoints"] = {
+        "capabilities": "/v1/capabilities",
+        "health": "/v1/health",
+        "models": "/v1/models",
+        "quote": "/v1/quote",
+    }
+    return payload
+
+
 def _readiness_payload(config: GatewayConfig) -> dict[str, object]:
     checks = {
         "api": "ok",
@@ -117,9 +145,41 @@ def _capability_from_rule(rule: RouteRule) -> CapabilityConfig:
         id=capability_id,
         description=rule.metadata.description or rule.name,
         path=rule.path,
+        method=rule.methods[0],
         streaming=True,
         pricing=rule.price,
     )
+
+
+def _quote_payload(config: GatewayConfig, payload: dict[str, object]) -> dict[str, object]:
+    capability_id = str(payload.get("capability", ""))
+    model_id = str(payload.get("model", ""))
+    capability = next(
+        (candidate for candidate in _capabilities(config) if candidate.id == capability_id),
+        None,
+    )
+    if not capability:
+        raise HTTPException(status_code=404, detail="capability_not_found")
+    if model_id and model_id not in capability.models:
+        raise HTTPException(status_code=400, detail="model_not_supported_for_capability")
+    if not model_id:
+        if not capability.models:
+            raise HTTPException(status_code=400, detail="capability_has_no_models")
+        model_id = capability.models[0]
+
+    return {
+        "quoteId": f"quote_{uuid4().hex}",
+        "providerId": config.vendor.id,
+        "capability": capability.id,
+        "model": model_id,
+        "price": capability.pricing.model_dump(mode="json"),
+        "payment": {
+            "protocol": "x402",
+            "method": capability.method,
+            "resource": capability.path,
+        },
+        "streaming": bool(payload.get("stream", capability.streaming)),
+    }
 
 
 def _handler_for_rule(path: str) -> Callable[[Request], object]:
