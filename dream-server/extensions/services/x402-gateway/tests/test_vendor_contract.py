@@ -147,6 +147,59 @@ class NoopAudit:
         self.payload = payload
 
 
+class JsonResponse:
+    def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "error",
+                request=httpx.Request("GET", "http://test.local"),
+                response=httpx.Response(self.status_code),
+            )
+
+
+class RuntimeHealthClient:
+    async def get(self, url: str, **kwargs: object) -> JsonResponse:
+        if url.endswith("/health"):
+            return JsonResponse(200, {"status": "ok"})
+        if url.endswith("/v1/models"):
+            return JsonResponse(
+                200,
+                {
+                    "data": [
+                        {
+                            "id": "llama-3.1-8b-instruct-q4",
+                            "object": "model",
+                        }
+                    ]
+                },
+            )
+        if url.endswith("/gpu"):
+            return JsonResponse(
+                200,
+                {
+                    "name": "NVIDIA Test GPU",
+                    "gpu_backend": "nvidia",
+                    "memory_type": "discrete",
+                    "memory_used_mb": 1024,
+                    "memory_total_mb": 16384,
+                    "memory_percent": 6.2,
+                    "utilization_percent": 7,
+                    "temperature_c": 42,
+                },
+            )
+        return JsonResponse(404, {})
+
+    async def post(self, url: str, **kwargs: object) -> JsonResponse:
+        return JsonResponse(200, {"choices": [{"message": {"content": "OK"}}]})
+
+
 def client() -> TestClient:
     return TestClient(create_app(CONFIG))
 
@@ -181,6 +234,7 @@ def test_provider_endpoint_advertises_marketplace_registration_contract() -> Non
     assert payload["endpoints"] == {
         "capabilities": "/v1/capabilities",
         "health": "/v1/health",
+        "runtimeHealth": "/v1/health/runtime",
         "models": "/v1/models",
         "quote": "/v1/quote",
     }
@@ -233,6 +287,28 @@ def test_readiness_reports_vendor_components() -> None:
             "usage_metering": "ok",
         },
     }
+
+
+def test_runtime_health_reports_llama_model_and_gpu(monkeypatch) -> None:
+    monkeypatch.setattr("app.main.DASHBOARD_API_KEY", "secret")
+    app = create_app(CONFIG)
+    app.state.http = RuntimeHealthClient()
+
+    response = TestClient(app).get("/v1/health/runtime?probe=true")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["checks"] == {
+        "api": "ok",
+        "llama_server": "ok",
+        "model_loaded": "ok",
+        "gpu": "ok",
+        "inference": "ok",
+    }
+    assert payload["details"]["advertisedModels"] == ["llama-3.1-8b-instruct-q4"]
+    assert payload["details"]["upstreamModels"] == ["llama-3.1-8b-instruct-q4"]
+    assert payload["details"]["gpu"]["name"] == "NVIDIA Test GPU"
 
 
 def test_capabilities_advertise_v1_sellable_services() -> None:

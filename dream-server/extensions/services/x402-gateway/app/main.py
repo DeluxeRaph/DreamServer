@@ -19,6 +19,10 @@ from .policy import RoutePolicy
 CONFIG_PATH = os.environ.get("X402_CONFIG_PATH", "/config/config.json")
 AUDIT_LOG_PATH = os.environ.get("X402_AUDIT_LOG", "/data/audit.jsonl")
 PORT = int(os.environ.get("X402_GATEWAY_PORT_INTERNAL", "4020"))
+LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://llama-server:8080")
+DASHBOARD_API_URL = os.environ.get("DASHBOARD_API_URL", "http://dashboard-api:3002")
+DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
+RUNTIME_HEALTH_TIMEOUT = float(os.environ.get("X402_RUNTIME_HEALTH_TIMEOUT", "5"))
 
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
@@ -44,6 +48,10 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     @app.get("/v1/health/ready")
     async def ready() -> dict[str, object]:
         return _readiness_payload(loaded)
+
+    @app.get("/v1/health/runtime")
+    async def runtime_health(probe: bool = False) -> dict[str, object]:
+        return await _runtime_health_payload(loaded, app.state.http, probe=probe)
 
     @app.get("/v1/provider")
     async def provider() -> dict[str, object]:
@@ -115,6 +123,7 @@ def _provider_payload(config: GatewayConfig) -> dict[str, object]:
     payload["endpoints"] = {
         "capabilities": "/v1/capabilities",
         "health": "/v1/health",
+        "runtimeHealth": "/v1/health/runtime",
         "models": "/v1/models",
         "quote": "/v1/quote",
     }
@@ -180,6 +189,120 @@ def _quote_payload(config: GatewayConfig, payload: dict[str, object]) -> dict[st
         },
         "streaming": bool(payload.get("stream", capability.streaming)),
     }
+
+
+async def _runtime_health_payload(
+    config: GatewayConfig,
+    client: httpx.AsyncClient,
+    *,
+    probe: bool = False,
+) -> dict[str, object]:
+    checks: dict[str, str] = {"api": "ok"}
+    details: dict[str, object] = {}
+
+    llama_base = LLAMA_SERVER_URL.rstrip("/")
+    dashboard_base = DASHBOARD_API_URL.rstrip("/")
+    advertised_models = [model.id for model in config.models]
+    details["advertisedModels"] = advertised_models
+
+    try:
+        llama_health = await client.get(
+            f"{llama_base}/health",
+            timeout=RUNTIME_HEALTH_TIMEOUT,
+        )
+        checks["llama_server"] = "ok" if 200 <= llama_health.status_code < 300 else "down"
+        details["llamaHealthStatus"] = llama_health.status_code
+    except httpx.HTTPError as exc:
+        checks["llama_server"] = "down"
+        details["llamaError"] = exc.__class__.__name__
+
+    upstream_models: list[str] = []
+    try:
+        models_response = await client.get(
+            f"{llama_base}/v1/models",
+            timeout=RUNTIME_HEALTH_TIMEOUT,
+        )
+        models_response.raise_for_status()
+        models_payload = models_response.json()
+        upstream_models = _extract_model_ids(models_payload)
+        missing = [model_id for model_id in advertised_models if model_id not in upstream_models]
+        checks["model_loaded"] = "ok" if advertised_models and not missing else "down"
+        details["upstreamModels"] = upstream_models
+        if missing:
+            details["missingModels"] = missing
+    except (httpx.HTTPError, ValueError) as exc:
+        checks["model_loaded"] = "down"
+        details["modelError"] = exc.__class__.__name__
+
+    if DASHBOARD_API_KEY:
+        try:
+            gpu_response = await client.get(
+                f"{dashboard_base}/gpu",
+                headers={"Authorization": f"Bearer {DASHBOARD_API_KEY}"},
+                timeout=RUNTIME_HEALTH_TIMEOUT,
+            )
+            if 200 <= gpu_response.status_code < 300:
+                gpu_payload = gpu_response.json()
+                checks["gpu"] = "ok"
+                details["gpu"] = {
+                    "name": gpu_payload.get("name"),
+                    "backend": gpu_payload.get("gpu_backend"),
+                    "memoryType": gpu_payload.get("memory_type"),
+                    "memoryUsedMb": gpu_payload.get("memory_used_mb"),
+                    "memoryTotalMb": gpu_payload.get("memory_total_mb"),
+                    "memoryPercent": gpu_payload.get("memory_percent"),
+                    "utilizationPercent": gpu_payload.get("utilization_percent"),
+                    "temperatureC": gpu_payload.get("temperature_c"),
+                }
+            else:
+                checks["gpu"] = "down"
+                details["gpuStatus"] = gpu_response.status_code
+        except (httpx.HTTPError, ValueError) as exc:
+            checks["gpu"] = "down"
+            details["gpuError"] = exc.__class__.__name__
+    else:
+        checks["gpu"] = "unknown"
+        details["gpuError"] = "dashboard_api_key_not_configured"
+
+    if probe:
+        probe_model = advertised_models[0] if advertised_models else (upstream_models[0] if upstream_models else "default")
+        try:
+            probe_response = await client.post(
+                f"{llama_base}/v1/chat/completions",
+                json={
+                    "model": probe_model,
+                    "messages": [{"role": "user", "content": "Reply OK only. /no_think"}],
+                    "max_tokens": 8,
+                    "temperature": 0,
+                    "stream": False,
+                },
+                timeout=max(RUNTIME_HEALTH_TIMEOUT, 30),
+            )
+            checks["inference"] = "ok" if 200 <= probe_response.status_code < 300 else "down"
+            details["inferenceStatus"] = probe_response.status_code
+            details["inferenceModel"] = probe_model
+        except httpx.HTTPError as exc:
+            checks["inference"] = "down"
+            details["inferenceError"] = exc.__class__.__name__
+
+    status = "ok" if all(value == "ok" for value in checks.values()) else "degraded"
+    return {"status": status, "checks": checks, "details": details}
+
+
+def _extract_model_ids(payload: dict[str, object]) -> list[str]:
+    model_ids: list[str] = []
+    for key in ("data", "models"):
+        entries = payload.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for field in ("id", "model", "name"):
+                value = entry.get(field)
+                if isinstance(value, str) and value and value not in model_ids:
+                    model_ids.append(value)
+    return model_ids
 
 
 def _handler_for_rule(path: str) -> Callable[[Request], object]:

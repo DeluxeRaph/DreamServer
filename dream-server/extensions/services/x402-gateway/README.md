@@ -106,9 +106,13 @@ Required free vendor endpoints:
 | --- | --- |
 | `GET /v1/health` | Fast liveness check for the API process. |
 | `GET /v1/health/ready` | Readiness check for capability registry, payment rules, and usage metering. |
+| `GET /v1/health/runtime` | Runtime check for llama-server health, advertised model availability, and dashboard GPU status. Add `?probe=true` to run a tiny inference probe. |
+| `GET /v1/provider` | Provider identity, protocol metadata, and contract endpoint links. |
+| `GET /v1/models` | Advertised local model metadata. |
 | `GET /v1/vendor` | Provider identity and protocol metadata. |
 | `GET /v1/limits` | Node-level request size, streaming, timeout, and rate-limit metadata. |
-| `GET /v1/capabilities` | Advertised paid capabilities, pricing, risk level, schemas, and examples. |
+| `GET /v1/capabilities` | Advertised paid capabilities, pricing, model requirements, schemas, and examples. |
+| `POST /v1/quote` | Quote and x402 payment metadata for a capability/model pair. |
 
 Default paid capability endpoints:
 
@@ -118,10 +122,11 @@ Default paid capability endpoints:
 | `POST /v1/capabilities/coding_help` | Code explanation, generation, and debugging help. |
 | `POST /v1/capabilities/coding_review` | Review pasted code or diffs and return findings. |
 
-Health, readiness, vendor, limits, and capabilities endpoints are not charged.
-Payment is enforced before protected capability routes are proxied upstream.
-Streaming is advertised per capability and forwarded to the configured upstream
-when the backend supports streaming responses.
+Health, readiness, provider, model, quote, vendor, limits, and capabilities
+endpoints are not charged. Payment is enforced before protected capability
+routes are proxied upstream. Streaming is advertised per capability and
+forwarded to the configured upstream when the backend supports streaming
+responses.
 
 ## Design
 
