@@ -27,6 +27,7 @@ DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
 RUNTIME_HEALTH_TIMEOUT = float(os.environ.get("X402_RUNTIME_HEALTH_TIMEOUT", "5"))
 HERMES_URL = os.environ.get("HERMES_URL", "http://dream-hermes:9119")
 HERMES_CHAT_TIMEOUT = float(os.environ.get("X402_HERMES_CHAT_TIMEOUT", "120"))
+HERMES_SESSIONS_PATH = os.environ.get("HERMES_SESSIONS_PATH", "/opt/data/sessions")
 
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
@@ -56,6 +57,10 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     @app.get("/v1/health/runtime")
     async def runtime_health(probe: bool = False) -> dict[str, object]:
         return await _runtime_health_payload(loaded, app.state.http, probe=probe)
+
+    @app.get("/v1/hermes/status")
+    async def hermes_status() -> dict[str, object]:
+        return await _hermes_status_payload(app.state.http)
 
     @app.get("/v1/provider")
     async def provider() -> dict[str, object]:
@@ -127,6 +132,7 @@ def _provider_payload(config: GatewayConfig) -> dict[str, object]:
     payload["endpoints"] = {
         "capabilities": "/v1/capabilities",
         "health": "/v1/health",
+        "hermesStatus": "/v1/hermes/status",
         "runtimeHealth": "/v1/health/runtime",
         "models": "/v1/models",
         "quote": "/v1/quote",
@@ -208,6 +214,10 @@ async def _runtime_health_payload(
     dashboard_base = DASHBOARD_API_URL.rstrip("/")
     advertised_models = [model.id for model in config.models]
     details["advertisedModels"] = advertised_models
+
+    hermes_status = await _hermes_status_payload(client)
+    checks["hermes"] = "ok" if hermes_status["status"] == "ok" else "down"
+    details["hermes"] = hermes_status
 
     try:
         llama_health = await client.get(
@@ -291,6 +301,28 @@ async def _runtime_health_payload(
 
     status = "ok" if all(value == "ok" for value in checks.values()) else "degraded"
     return {"status": status, "checks": checks, "details": details}
+
+
+async def _hermes_status_payload(client: httpx.AsyncClient) -> dict[str, object]:
+    hermes_base = HERMES_URL.rstrip("/")
+    payload: dict[str, object] = {
+        "status": "down",
+        "hermes": "down",
+        "url": hermes_base,
+        "sessions": {
+            "enabled": True,
+            "path": HERMES_SESSIONS_PATH,
+        },
+    }
+    try:
+        response = await client.get(f"{hermes_base}/", timeout=RUNTIME_HEALTH_TIMEOUT)
+        payload["statusCode"] = response.status_code
+        if 200 <= response.status_code < 300:
+            payload["status"] = "ok"
+            payload["hermes"] = "ok"
+    except httpx.HTTPError as exc:
+        payload["error"] = exc.__class__.__name__
+    return payload
 
 
 def _extract_model_ids(payload: dict[str, object]) -> list[str]:

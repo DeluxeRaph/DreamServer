@@ -82,6 +82,7 @@ Free vendor/control checks:
 ```bash
 curl http://127.0.0.1:4020/v1/health
 curl http://127.0.0.1:4020/v1/health/ready
+curl http://127.0.0.1:4020/v1/hermes/status
 curl http://127.0.0.1:4020/v1/vendor
 curl http://127.0.0.1:4020/v1/limits
 curl http://127.0.0.1:4020/v1/capabilities
@@ -106,7 +107,8 @@ Required free vendor endpoints:
 | --- | --- |
 | `GET /v1/health` | Fast liveness check for the API process. |
 | `GET /v1/health/ready` | Readiness check for capability registry, payment rules, and usage metering. |
-| `GET /v1/health/runtime` | Runtime check for llama-server health, advertised model availability, and dashboard GPU status. Add `?probe=true` to run a tiny inference probe. |
+| `GET /v1/health/runtime` | Runtime check for Hermes, llama-server health, advertised model availability, and dashboard GPU status. Add `?probe=true` to run a tiny inference probe. |
+| `GET /v1/hermes/status` | Hermes Agent availability and session-store metadata for session-persistent chat. |
 | `GET /v1/provider` | Provider identity, protocol metadata, and contract endpoint links. |
 | `GET /v1/models` | Advertised local model metadata. |
 | `GET /v1/vendor` | Provider identity and protocol metadata. |

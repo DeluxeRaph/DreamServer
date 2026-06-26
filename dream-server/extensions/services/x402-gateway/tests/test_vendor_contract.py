@@ -198,6 +198,8 @@ class JsonResponse:
 
 class RuntimeHealthClient:
     async def get(self, url: str, **kwargs: object) -> JsonResponse:
+        if url == "http://dream-hermes:9119/":
+            return JsonResponse(200, {"status": "ok"})
         if url.endswith("/health"):
             return JsonResponse(200, {"status": "ok"})
         if url.endswith("/v1/models"):
@@ -250,6 +252,7 @@ def test_vendor_contract_control_endpoints_are_public() -> None:
 
     assert app_client.get("/v1/health").status_code == 200
     assert app_client.get("/v1/health/ready").status_code == 200
+    assert app_client.get("/v1/hermes/status").status_code == 200
     assert app_client.get("/v1/provider").status_code == 200
     assert app_client.get("/v1/vendor").status_code == 200
     assert app_client.get("/v1/models").status_code == 200
@@ -266,6 +269,7 @@ def test_provider_endpoint_advertises_marketplace_registration_contract() -> Non
     assert payload["endpoints"] == {
         "capabilities": "/v1/capabilities",
         "health": "/v1/health",
+        "hermesStatus": "/v1/hermes/status",
         "runtimeHealth": "/v1/health/runtime",
         "models": "/v1/models",
         "quote": "/v1/quote",
@@ -321,6 +325,25 @@ def test_readiness_reports_vendor_components() -> None:
     }
 
 
+def test_hermes_status_reports_session_store_contract() -> None:
+    app = create_app(CONFIG)
+    app.state.http = RuntimeHealthClient()
+
+    response = TestClient(app).get("/v1/hermes/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "hermes": "ok",
+        "url": "http://dream-hermes:9119",
+        "sessions": {
+            "enabled": True,
+            "path": "/opt/data/sessions",
+        },
+        "statusCode": 200,
+    }
+
+
 def test_runtime_health_reports_llama_model_and_gpu(monkeypatch) -> None:
     monkeypatch.setattr("app.main.DASHBOARD_API_KEY", "secret")
     app = create_app(CONFIG)
@@ -333,12 +356,14 @@ def test_runtime_health_reports_llama_model_and_gpu(monkeypatch) -> None:
     assert payload["status"] == "ok"
     assert payload["checks"] == {
         "api": "ok",
+        "hermes": "ok",
         "llama_server": "ok",
         "model_loaded": "ok",
         "gpu": "ok",
         "inference": "ok",
     }
     assert payload["details"]["advertisedModels"] == ["llama-3.1-8b-instruct-q4"]
+    assert payload["details"]["hermes"]["sessions"]["enabled"] is True
     assert payload["details"]["upstreamModels"] == ["llama-3.1-8b-instruct-q4"]
     assert payload["details"]["gpu"]["name"] == "NVIDIA Test GPU"
 
