@@ -101,6 +101,53 @@
       ]
     },
     {
+      "id": "hermes_chat",
+      "type": "agent.chat",
+      "description": "Session-persistent Hermes Agent chat backed by Dream Server.",
+      "path": "/v1/capabilities/hermes_chat",
+      "method": "POST",
+      "models": ["llama-3.1-8b-instruct-q4"],
+      "streaming": true,
+      "streamFormat": "sse",
+      "pricing": {
+        "mode": "streaming",
+        "amount": "0.002",
+        "currency": "USDC"
+      },
+      "limits": {
+        "maxPromptChars": 50000,
+        "maxOutputTokens": 4096
+      },
+      "inputSchema": {
+        "session_id": "optional string; durable Hermes session id returned by a prior response",
+        "messages": "array",
+        "prompt": "string",
+        "stream": "boolean",
+        "max_tokens": "optional number"
+      },
+      "outputSchema": {
+        "session_id": "string",
+        "stream": "text/event-stream",
+        "usage": "object"
+      },
+      "examples": [
+        {
+          "session_id": "20260626_220934_35df55",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Continue from our last message."
+            }
+          ],
+          "stream": true
+        }
+      ],
+      "requires": [
+        "hermes",
+        "llama-server"
+      ]
+    },
+    {
       "id": "coding_help",
       "type": "code.help",
       "description": "Explain, generate, or debug pasted code snippets.",
@@ -188,6 +235,25 @@
       "metadata": {
         "title": "Dream Server local chat",
         "description": "Paid local chat capability backed by Dream Server llama-server",
+        "mimeType": "application/json"
+      }
+    },
+    {
+      "name": "hermes_chat",
+      "kind": "http_route",
+      "path": "/v1/capabilities/hermes_chat",
+      "methods": [
+        "POST"
+      ],
+      "upstream": "http://dream-hermes:9119",
+      "price": {
+        "mode": "streaming",
+        "amount": "0.002",
+        "currency": "USDC"
+      },
+      "metadata": {
+        "title": "Dream Server Hermes chat",
+        "description": "Paid session-persistent chat capability backed by Hermes Agent and local inference",
         "mimeType": "application/json"
       }
     },

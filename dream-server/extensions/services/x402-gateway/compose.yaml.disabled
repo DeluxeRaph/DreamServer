@@ -15,6 +15,7 @@ services:
       - X402_AUDIT_LOG=/data/audit.jsonl
       - X402_GATEWAY_PORT_INTERNAL=4020
       - LLAMA_SERVER_URL=${LLM_API_URL:-http://llama-server:8080}
+      - HERMES_URL=http://dream-hermes:9119
       - DASHBOARD_API_URL=http://dashboard-api:3002
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
       - CDP_API_KEY_ID=${CDP_API_KEY_ID:-}

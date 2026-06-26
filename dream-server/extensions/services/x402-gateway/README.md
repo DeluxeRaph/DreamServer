@@ -119,6 +119,7 @@ Default paid capability endpoints:
 | Endpoint | Capability |
 | --- | --- |
 | `POST /v1/capabilities/local_chat` | General local LLM chat completion. |
+| `POST /v1/capabilities/hermes_chat` | Session-persistent Hermes Agent chat. Returns an SSE metadata chunk containing the durable `session_id`; pass that value on the next request to resume. |
 | `POST /v1/capabilities/coding_help` | Code explanation, generation, and debugging help. |
 | `POST /v1/capabilities/coding_review` | Review pasted code or diffs and return findings. |
 

@@ -3,4 +3,5 @@ cryptography==46.0.3
 httpx==0.28.1
 pydantic==2.11.7
 uvicorn[standard]==0.35.0
+websockets==15.0.1
 x402[fastapi,evm]==2.13.0

@@ -7,11 +7,13 @@ from uuid import uuid4
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
+from starlette.responses import StreamingResponse
 from x402.http.middleware.fastapi import PaymentMiddlewareASGI
 
 from .audit import AuditLog
 from .config import CapabilityConfig, GatewayConfig, RouteRule, load_config
 from .gateway import proxy_request
+from .hermes import HermesError, stream_hermes_chat
 from .payments import build_resource_server, build_x402_routes
 from .policy import RoutePolicy
 
@@ -23,6 +25,8 @@ LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://llama-server:8080"
 DASHBOARD_API_URL = os.environ.get("DASHBOARD_API_URL", "http://dashboard-api:3002")
 DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
 RUNTIME_HEALTH_TIMEOUT = float(os.environ.get("X402_RUNTIME_HEALTH_TIMEOUT", "5"))
+HERMES_URL = os.environ.get("HERMES_URL", "http://dream-hermes:9119")
+HERMES_CHAT_TIMEOUT = float(os.environ.get("X402_HERMES_CHAT_TIMEOUT", "120"))
 
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
@@ -94,7 +98,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         )
 
     for rule in loaded.rules:
-        handler = _handler_for_rule(rule.path)
+        handler = _handler_for_rule(rule)
         for method in rule.methods:
             app.add_api_route(
                 rule.path,
@@ -305,7 +309,35 @@ def _extract_model_ids(payload: dict[str, object]) -> list[str]:
     return model_ids
 
 
-def _handler_for_rule(path: str) -> Callable[[Request], object]:
+def _handler_for_rule(rule_config: RouteRule) -> Callable[[Request], object]:
+    if rule_config.name == "hermes_chat":
+        async def hermes_handler(request: Request) -> Response:
+            try:
+                payload = await request.json()
+                if not isinstance(payload, dict):
+                    raise HermesError("json_object_required")
+                config: GatewayConfig = request.app.state.config
+                model = (
+                    str(payload.get("model") or "").strip()
+                    or (config.models[0].id if config.models else "local")
+                )
+                return StreamingResponse(
+                    stream_hermes_chat(
+                        payload=payload,
+                        client=request.app.state.http,
+                        hermes_url=HERMES_URL,
+                        model=model,
+                        timeout=HERMES_CHAT_TIMEOUT,
+                    ),
+                    media_type="text/event-stream",
+                )
+            except HermesError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return hermes_handler
+
+    path = rule_config.path
+
     async def handler(request: Request) -> Response:
         policy: RoutePolicy = request.app.state.policy
         rule = policy.match(request.method, path)

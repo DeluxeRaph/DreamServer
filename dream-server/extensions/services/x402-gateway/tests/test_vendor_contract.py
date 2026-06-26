@@ -85,6 +85,30 @@ CONFIG = GatewayConfig.model_validate(
                 "requires": ["hermes", "llama-server"],
             },
             {
+                "id": "hermes_chat",
+                "type": "agent.chat",
+                "description": "Session-persistent Hermes Agent chat backed by Dream Server.",
+                "path": "/v1/capabilities/hermes_chat",
+                "method": "POST",
+                "models": ["llama-3.1-8b-instruct-q4"],
+                "streaming": True,
+                "streamFormat": "sse",
+                "pricing": {"mode": "streaming", "amount": "0.002", "currency": "USDC"},
+                "inputSchema": {
+                    "session_id": "optional string; durable Hermes session id returned by a prior response",
+                    "messages": "array",
+                    "prompt": "string",
+                    "stream": "boolean",
+                    "max_tokens": "optional number",
+                },
+                "outputSchema": {
+                    "session_id": "string",
+                    "stream": "text/event-stream",
+                    "usage": "object",
+                },
+                "requires": ["hermes", "llama-server"],
+            },
+            {
                 "id": "coding_review",
                 "type": "code.review",
                 "description": "Review pasted code or diffs and return findings.",
@@ -105,6 +129,14 @@ CONFIG = GatewayConfig.model_validate(
                 "methods": ["POST"],
                 "upstream": "http://llama-server:8080/v1/chat/completions",
                 "price": {"mode": "streaming", "amount": "0.001", "currency": "USDC"},
+            },
+            {
+                "name": "hermes_chat",
+                "kind": "http_route",
+                "path": "/v1/capabilities/hermes_chat",
+                "methods": ["POST"],
+                "upstream": "http://dream-hermes:9119",
+                "price": {"mode": "streaming", "amount": "0.002", "currency": "USDC"},
             }
         ],
     }
@@ -316,13 +348,20 @@ def test_capabilities_advertise_v1_sellable_services() -> None:
 
     assert payload["provider"]["id"] == "dream-test-node"
     capabilities = {capability["id"]: capability for capability in payload["capabilities"]}
-    assert set(capabilities) == {"local_chat", "coding_help", "coding_review"}
+    assert set(capabilities) == {"local_chat", "coding_help", "coding_review", "hermes_chat"}
     assert capabilities["local_chat"]["streaming"] is True
     assert capabilities["local_chat"]["streamFormat"] == "sse"
     assert capabilities["local_chat"]["type"] == "chat.completions"
     assert capabilities["local_chat"]["method"] == "POST"
     assert capabilities["local_chat"]["models"] == ["llama-3.1-8b-instruct-q4"]
     assert capabilities["local_chat"]["requires"] == ["hermes", "llama-server"]
+    assert capabilities["hermes_chat"]["type"] == "agent.chat"
+    assert capabilities["hermes_chat"]["inputSchema"]["session_id"].startswith("optional string")
+    assert capabilities["hermes_chat"]["pricing"] == {
+        "amount": "0.002",
+        "currency": "USDC",
+        "mode": "streaming",
+    }
     assert "riskLevel" not in capabilities["local_chat"]
     assert capabilities["coding_review"]["pricing"] == {
         "amount": "0.005",
