@@ -299,6 +299,8 @@ def build_context_block(env_path: Path) -> str:
         f"- **Mobile chat portal (Dream Talk)**: `http://{talk_host}` — the operator scans an owner-card QR code to land here on their phone",
         f"- **Open WebUI** (desktop-style chat surface, separate from Dream Talk): `http://{chat_host}`",
         "",
+        "**Hardware answer policy:** For ordinary questions like \"what hardware are you running on?\", answer from the facts above without guessing. If the operator asks you to verify, inspect live stats, or debug hardware, use the `nvidia-jetson` skill and the Dream Server runtime health endpoint; do not invent chipset, CPU, GPU, memory, or board details not present in those sources.",
+        "",
         "## Services running on this install right now",
         "",
         "Dream Server has an **extensions system** — services bundled with the stack that the operator can enable/disable from the dashboard's Extensions page without reinstalling. The list below is what's currently running. Some are tools you can call directly through your own tool-calling layer; others are surfaces you can point the operator at.",
