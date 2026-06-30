@@ -165,10 +165,13 @@ async def stream_hermes_chat(
     hermes_url: str,
     model: str,
     timeout: float,
+    max_output_tokens: int,
 ) -> AsyncIterator[bytes]:
     prompt = extract_prompt(payload)
     requested_session_id = normalize_session_id(payload.get("session_id"))
     cols = int(payload.get("cols") or 100)
+    emitted_chars = 0
+    max_output_chars = max(1, max_output_tokens) * 4
     token = await _hermes_token(client, hermes_url, timeout)
     ws_url = f"{hermes_url.rstrip('/').replace('http://', 'ws://').replace('https://', 'wss://')}/api/ws?token={token}"
 
@@ -201,7 +204,19 @@ async def stream_hermes_chat(
             if event_type == "message.delta":
                 text = event_payload.get("text")
                 if isinstance(text, str) and text:
+                    remaining_chars = max_output_chars - emitted_chars
+                    if remaining_chars <= 0:
+                        yield sse_data(final_chunk(model, durable_session_id, final_usage, "length"))
+                        yield sse_data("[DONE]")
+                        return
+                    if len(text) > remaining_chars:
+                        text = text[:remaining_chars]
+                    emitted_chars += len(text)
                     yield sse_data(chat_chunk(model, text))
+                    if emitted_chars >= max_output_chars:
+                        yield sse_data(final_chunk(model, durable_session_id, final_usage, "length"))
+                        yield sse_data("[DONE]")
+                        return
             elif event_type == "message.complete":
                 final_usage = event_payload.get("usage") if isinstance(event_payload.get("usage"), dict) else {}
                 final_status = str(event_payload.get("status") or "complete")
@@ -213,4 +228,3 @@ async def stream_hermes_chat(
             elif event_type == "error":
                 detail = event_payload.get("message") or "hermes_stream_error"
                 raise HermesError(str(detail))
-

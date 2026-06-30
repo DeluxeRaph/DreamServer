@@ -481,3 +481,34 @@ def test_paid_capability_proxy_uses_streaming_upstream() -> None:
     assert upstream.url == "http://llama-server:8080/v1/chat/completions?trace=1"
     assert audit.event == "paid_request_forwarded"
     assert audit.payload["status_code"] == 200
+
+
+def test_hermes_chat_clamps_requested_max_tokens(monkeypatch) -> None:
+    config = CONFIG.model_copy(deep=True)
+    for capability in config.capabilities:
+        if capability.id == "hermes_chat":
+            capability.limits.maxOutputTokens = 256
+
+    captured: dict[str, object] = {}
+
+    async def fake_stream_hermes_chat(**kwargs: object):
+        captured.update(kwargs)
+        yield b"data: [DONE]\n\n"
+
+    monkeypatch.setattr("app.main.stream_hermes_chat", fake_stream_hermes_chat)
+    app_client = TestClient(create_app(config))
+
+    with app_client.stream(
+        "POST",
+        "/v1/capabilities/hermes_chat",
+        json={
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+            "max_tokens": 999,
+        },
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert body == b"data: [DONE]\n\n"
+    assert captured["max_output_tokens"] == 256

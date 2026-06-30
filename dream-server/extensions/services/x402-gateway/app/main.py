@@ -353,6 +353,26 @@ def _handler_for_rule(rule_config: RouteRule) -> Callable[[Request], object]:
                     str(payload.get("model") or "").strip()
                     or (config.models[0].id if config.models else "local")
                 )
+                capability = next(
+                    (item for item in config.capabilities if item.id == rule_config.name),
+                    None,
+                )
+                configured_max_tokens = (
+                    capability.limits.maxOutputTokens
+                    if capability is not None
+                    else config.limits.maxOutputTokens
+                )
+                requested_max_tokens = payload.get("max_tokens")
+                if requested_max_tokens is None:
+                    max_output_tokens = configured_max_tokens
+                else:
+                    try:
+                        max_output_tokens = int(requested_max_tokens)
+                    except (TypeError, ValueError):
+                        raise HermesError("invalid_max_tokens")
+                    if max_output_tokens <= 0:
+                        raise HermesError("invalid_max_tokens")
+                    max_output_tokens = min(max_output_tokens, configured_max_tokens)
                 return StreamingResponse(
                     stream_hermes_chat(
                         payload=payload,
@@ -360,6 +380,7 @@ def _handler_for_rule(rule_config: RouteRule) -> Callable[[Request], object]:
                         hermes_url=HERMES_URL,
                         model=model,
                         timeout=HERMES_CHAT_TIMEOUT,
+                        max_output_tokens=max_output_tokens,
                     ),
                     media_type="text/event-stream",
                 )
