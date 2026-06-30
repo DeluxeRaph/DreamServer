@@ -192,6 +192,17 @@ def _humanize_gpu(env: dict[str, str]) -> str:
     """One-line GPU/backend description from .env."""
     backend = (env.get("GPU_BACKEND") or "cpu").lower()
     mode = env.get("DREAM_MODE", "").lower()
+    if backend == "jetson":
+        model = ""
+        try:
+            model = Path("/proc/device-tree/model").read_text(encoding="utf-8").strip("\x00\n ")
+        except OSError:
+            pass
+        board = model or "NVIDIA Jetson"
+        return (
+            f"{board} (Orin-family NVIDIA SoC with nvgpu/CUDA acceleration; "
+            "not Tegra X1, Xavier NX, Snapdragon, Qualcomm, or Mali)"
+        )
     if backend == "amd":
         if mode == "lemonade":
             return "AMD GPU (ROCm/Vulkan via Lemonade)"
