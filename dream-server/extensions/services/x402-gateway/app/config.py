@@ -35,6 +35,11 @@ class ModelConfig(BaseModel):
 class SellerConfig(BaseModel):
     network: str = "eip155:84532"
     asset: str = "USDC"
+    assetSymbol: str | None = None
+    assetDecimals: int | None = None
+    assetTransferMethod: Literal["eip3009", "permit2"] | None = None
+    assetName: str | None = None
+    assetVersion: str | None = None
     recipient: str
     facilitatorUrl: HttpUrl = Field(default="https://x402.org/facilitator")
 

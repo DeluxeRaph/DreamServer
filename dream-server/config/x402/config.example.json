@@ -3,6 +3,11 @@
   "seller": {
     "network": "eip155:84532",
     "asset": "USDC",
+    "assetSymbol": null,
+    "assetDecimals": null,
+    "assetTransferMethod": null,
+    "assetName": null,
+    "assetVersion": null,
     "recipient": "0xYourDreamServerWallet",
     "facilitatorUrl": "https://x402.org/facilitator"
   },

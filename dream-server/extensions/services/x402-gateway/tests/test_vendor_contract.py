@@ -9,6 +9,7 @@ os.environ.setdefault("X402_CONFIG_PATH", "../../../config/x402/config.example.j
 
 from app.config import GatewayConfig
 from app.main import create_app
+from app.payments import build_x402_routes
 
 
 CONFIG = GatewayConfig.model_validate(
@@ -443,6 +444,23 @@ def test_quote_endpoint_rejects_unknown_capability_model_pair() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "model_not_supported_for_capability"
+
+
+def test_x402_routes_support_permit2_erc20_assets() -> None:
+    config = CONFIG.model_copy(deep=True)
+    config.seller.asset = "0x1fec97CA2817DA87F266fd1741BBA61CAf7CdE29"
+    config.seller.assetDecimals = 6
+    config.seller.assetTransferMethod = "permit2"
+    config.rules[0].price.amount = "0.01"
+
+    routes = build_x402_routes(config)
+    payment = routes["POST /v1/capabilities/local_chat"].accepts[0]
+
+    assert payment.price == {
+        "amount": "10000",
+        "asset": "0x1fec97CA2817DA87F266fd1741BBA61CAf7CdE29",
+        "extra": {"assetTransferMethod": "permit2"},
+    }
 
 
 def test_paid_capability_proxy_uses_streaming_upstream() -> None:
