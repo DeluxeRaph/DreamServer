@@ -88,11 +88,13 @@ auxiliary:
 # We disable:
 #   * terminal — the model kept reaching for it on weather/news queries and
 #     hanging for 5 min on dead curl commands instead of using web_search.
+#   * code_execution — public paid endpoints should not run user-provided code.
 #   * browser  — full headless-browser toolset; Dream Talk is mobile chat,
 #     not interactive browsing, so we never want browser_console / navigate.
 agent:
   disabled_toolsets:
     - terminal
+    - code_execution
     - browser
 
 # =============================================================================
